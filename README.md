@@ -190,6 +190,9 @@ Set them in your shell profile or in Claude Code's `settings.json` under `"env"`
 
 ## Known limitations
 
+See [IDEAS.md](IDEAS.md) for what could be done about these and what else is on
+the list.
+
 - Summaries are heuristic (no LLM): a list of files and commands plus your
   last request and Claude's last message. Good enough to answer "what was I
   doing here?", not a narrative. An optional LLM summariser is a possible
