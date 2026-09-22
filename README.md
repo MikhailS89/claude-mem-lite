@@ -21,18 +21,33 @@ commented JavaScript you can audit in one sitting.
 
 ## Install
 
+**Option A — permanent, auto-loaded** (recommended). Claude Code picks up any
+plugin placed under `~/.claude/skills/` as `<name>@skills-dir`:
+
 ```bash
-git clone <this repo> ~/claude-mem-lite
+git clone git@github.com:MikhailS89/easy-claude-mem.git ~/.claude/skills/claude-mem-lite
+```
 
-# Try it for one session:
-claude --plugin-dir ~/claude-mem-lite
+Windows (PowerShell):
 
-# Or make it permanent (loads automatically as claude-mem-lite@skills-dir):
-mkdir -p ~/.claude/skills && cp -r ~/claude-mem-lite ~/.claude/skills/claude-mem-lite
+```powershell
+git clone git@github.com:MikhailS89/easy-claude-mem.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
+```
+
+Restart Claude Code (or the VS Code extension). Update later with
+`git -C ~/.claude/skills/claude-mem-lite pull`.
+
+**Option B — try it for one session** without installing:
+
+```bash
+git clone git@github.com:MikhailS89/easy-claude-mem.git
+claude --plugin-dir ./easy-claude-mem
 ```
 
 Check that it is loaded with `/plugin` inside Claude Code. The first recap
-appears in the second session you run in a project.
+appears in the *second* session you run in a project (there is nothing to
+recall before that). Run `npm test` in the clone if you want to verify the
+plugin on your machine before enabling it.
 
 ## What you get
 
@@ -184,8 +199,12 @@ Set them in your shell profile or in Claude Code's `settings.json` under `"env"`
 
 ## Uninstall
 
-Remove the plugin directory (or run `claude plugin uninstall claude-mem-lite`)
-and delete `~/.claude-mem-lite`. There are no other traces: no background
+```bash
+rm -rf ~/.claude/skills/claude-mem-lite   # the plugin
+rm -rf ~/.claude-mem-lite                 # the database and log
+```
+
+There are no other traces: no background
 processes, no registry/launchd entries, no files in your projects (unless you
 created a `.claude-mem-lite/disabled` marker yourself).
 

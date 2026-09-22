@@ -4,8 +4,11 @@
   "version": "0.1.0",
   "description": "Local, offline session memory for Claude Code: remembers what you worked on in each project and injects a short recap into new sessions. No network, no accounts, no daemons.",
   "author": {
-    "name": "dalax"
+    "name": "MikhailS89"
   },
+  "homepage": "https://github.com/MikhailS89/easy-claude-mem",
+  "repository": "https://github.com/MikhailS89/easy-claude-mem",
+  "license": "MIT",
   "hooks": "./hooks/hooks.json",
   "skills": "./skills/"
 }
