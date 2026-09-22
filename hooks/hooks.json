@@ -1,0 +1,44 @@
+{
+  "description": "claude-mem-lite: capture session activity into a local SQLite database and recall a short recap on session start. All hooks are plain Node scripts (exec form, no shell) and always exit 0 so they can never block Claude Code.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs"],
+            "timeout": 10,
+            "statusMessage": "claude-mem-lite: recalling previous sessions"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/scripts/session-stop.mjs"],
+            "timeout": 20,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/scripts/session-end.mjs"],
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
