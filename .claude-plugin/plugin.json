@@ -6,8 +6,8 @@
   "author": {
     "name": "MikhailS89"
   },
-  "homepage": "https://github.com/MikhailS89/easy-claude-mem",
-  "repository": "https://github.com/MikhailS89/easy-claude-mem",
+  "homepage": "https://github.com/MikhailS89/claude-mem-lite",
+  "repository": "https://github.com/MikhailS89/claude-mem-lite",
   "license": "MIT",
   "hooks": "./hooks/hooks.json",
   "skills": "./skills/"

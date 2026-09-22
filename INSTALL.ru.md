@@ -23,17 +23,17 @@ Node из репозитория Debian/Ubuntu часто устаревший �
 macOS / Linux:
 
 ```bash
-git clone git@github.com:MikhailS89/easy-claude-mem.git ~/.claude/skills/claude-mem-lite
+git clone git@github.com:MikhailS89/claude-mem-lite.git ~/.claude/skills/claude-mem-lite
 ```
 
 Windows (PowerShell):
 
 ```powershell
-git clone git@github.com:MikhailS89/easy-claude-mem.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
+git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
 ```
 
 Если SSH-ключ к GitHub не настроен, используйте HTTPS-адрес:
-`https://github.com/MikhailS89/easy-claude-mem.git`.
+`https://github.com/MikhailS89/claude-mem-lite.git`.
 
 **3. Полностью перезапустите** VS Code (или терминал с Claude Code).
 
@@ -90,8 +90,7 @@ $claude = (Get-ChildItem "$env:USERPROFILE\.vscode\extensions\anthropic.claude-c
 **Полезно знать:**
 
 - Правки в `SKILL.md` подхватываются сразу; изменения в хуках (`hooks/`) — только после `/reload-plugins` или перезапуска Claude Code.
-- Временно отключить, не удаляя папку: `claude plugin disable claude-mem-lite@skills-dir`.
-- Команды `uninstall` для таких плагинов нет — ничего не устанавливалось, достаточно удалить папку.
+- Отключение и удаление — в разделе «Удалить плагин»: команды `uninstall` для таких плагинов не существует.
 
 ## Как это работает в повседневной работе
 
@@ -170,7 +169,54 @@ alias mem='node ~/.claude/skills/claude-mem-lite/scripts/search.mjs'
   }
   ```
 
-- **Совсем удалить:** снести папку плагина `~/.claude/skills/claude-mem-lite` и папку данных `~/.claude-mem-lite`.
+- **Совсем удалить:** см. следующий раздел.
+
+## Удалить плагин
+
+**`claude plugin uninstall` здесь не работает** — и это не ошибка установки.
+Эта команда существует только для плагинов, поставленных из маркетплейса. Наш
+плагин вы просто положили папкой в `~/.claude/skills/`, никакой «установки» не
+было, поэтому Claude Code отвечает:
+
+```
+× Failed to uninstall plugin "claude-mem-lite@skills-dir": This plugin is loaded
+  from ~\.claude\skills/ with no marketplace backing — it cannot be uninstalled.
+```
+
+Правильные способы:
+
+- **Временно отключить**, оставив файлы и накопленную память:
+
+  ```bash
+  claude plugin disable claude-mem-lite@skills-dir
+  ```
+
+  Включить обратно — `claude plugin enable claude-mem-lite@skills-dir`.
+  Если команды `claude` нет в PATH — см. раздел «Откуда Claude Code загружает
+  плагины автоматически»; либо просто пропишите `CLAUDE_MEM_LITE_ENABLED=false`
+  в `~/.claude/settings.json`.
+
+- **Удалить сам плагин** (память при этом сохранится):
+
+  ```bash
+  rm -rf ~/.claude/skills/claude-mem-lite                                   # macOS / Linux
+  ```
+  ```powershell
+  Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\skills\claude-mem-lite"   # Windows
+  ```
+
+- **Удалить вместе с накопленной памятью** — дополнительно снести папку данных:
+
+  ```bash
+  rm -rf ~/.claude-mem-lite                                                 # macOS / Linux
+  ```
+  ```powershell
+  Remove-Item -Recurse -Force "$env:USERPROFILE\.claude-mem-lite"           # Windows
+  ```
+
+После удаления перезапустите Claude Code. Никаких других следов не остаётся:
+фоновых процессов нет, в проектах файлы не создаются (кроме маркера
+`.claude-mem-lite/disabled`, если вы делали его сами).
 
 ## Обновить
 

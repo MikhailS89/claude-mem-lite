@@ -28,12 +28,12 @@ platform:
 
 ```bash
 # macOS / Linux
-git clone git@github.com:MikhailS89/easy-claude-mem.git ~/.claude/skills/claude-mem-lite
+git clone git@github.com:MikhailS89/claude-mem-lite.git ~/.claude/skills/claude-mem-lite
 ```
 
 ```powershell
 # Windows (PowerShell)
-git clone git@github.com:MikhailS89/easy-claude-mem.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
+git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
 ```
 
 Restart Claude Code (or the VS Code extension). Confirm with `claude plugin list`
@@ -43,8 +43,8 @@ later with `git -C ~/.claude/skills/claude-mem-lite pull`.
 **Option B — try it for one session** without installing:
 
 ```bash
-git clone git@github.com:MikhailS89/easy-claude-mem.git
-claude --plugin-dir ./easy-claude-mem
+git clone git@github.com:MikhailS89/claude-mem-lite.git
+claude --plugin-dir ./claude-mem-lite
 ```
 
 Check that it is loaded with `/plugin` inside Claude Code. The first recap
@@ -202,10 +202,25 @@ Set them in your shell profile or in Claude Code's `settings.json` under `"env"`
 
 ## Uninstall
 
+`claude plugin uninstall` does **not** apply here — it only works for plugins
+installed from a marketplace, and fails with *"loaded from ~/.claude/skills/
+with no marketplace backing"*. A skills-directory plugin is removed by deleting
+its folder:
+
 ```bash
 rm -rf ~/.claude/skills/claude-mem-lite   # the plugin
 rm -rf ~/.claude-mem-lite                 # the database and log
 ```
+
+```powershell
+# Windows (PowerShell)
+Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\skills\claude-mem-lite"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.claude-mem-lite"
+```
+
+To keep the files but stop loading the plugin, use
+`claude plugin disable claude-mem-lite@skills-dir` instead (re-enable with
+`claude plugin enable`).
 
 There are no other traces: no background
 processes, no registry/launchd entries, no files in your projects (unless you
