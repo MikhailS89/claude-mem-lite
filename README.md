@@ -18,24 +18,27 @@ commented JavaScript you can audit in one sitting.
 
 - Node.js **22.13+** (uses the built-in `node:sqlite`; tested on Node 24)
 - Claude Code 2.1+
+- macOS, Linux or Windows (developed and tested on Windows 10 + Node 24)
 
 ## Install
 
 **Option A — permanent, auto-loaded** (recommended). Claude Code picks up any
-plugin placed under `~/.claude/skills/` as `<name>@skills-dir`:
+plugin placed under `~/.claude/skills/` as `<name>@skills-dir`, on every
+platform:
 
 ```bash
+# macOS / Linux
 git clone git@github.com:MikhailS89/easy-claude-mem.git ~/.claude/skills/claude-mem-lite
 ```
 
-Windows (PowerShell):
-
 ```powershell
+# Windows (PowerShell)
 git clone git@github.com:MikhailS89/easy-claude-mem.git "$env:USERPROFILE\.claude\skills\claude-mem-lite"
 ```
 
-Restart Claude Code (or the VS Code extension). Update later with
-`git -C ~/.claude/skills/claude-mem-lite pull`.
+Restart Claude Code (or the VS Code extension). Confirm with `claude plugin list`
+— it prints the path it loaded the plugin from and `Status: ✔ loaded`. Update
+later with `git -C ~/.claude/skills/claude-mem-lite pull`.
 
 **Option B — try it for one session** without installing:
 
