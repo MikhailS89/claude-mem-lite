@@ -2,7 +2,8 @@
 //
 // One JSON object per line. Records we care about:
 //   type=user      message.content = [{type:"text"}]      -> a human prompt
-//                  message.content = [{type:"tool_result"}] -> tool output (ignored)
+//                  message.content = [{type:"tool_result"}] -> tool output (kept for Bash only,
+//                                                               to find the commits a session made)
 //   type=assistant message.content = [{type:"text"|"tool_use"|"thinking"}]
 //   type=ai-title  aiTitle                                -> session title
 // Records flagged `isSidechain` belong to subagents and are skipped; `isMeta`
@@ -31,7 +32,8 @@ const FILE_TOOLS = {
  * @property {string|null} startedAt   ISO timestamp of the first record
  * @property {string|null} endedAt     ISO timestamp of the last record
  * @property {{ts:string, text:string}[]} prompts
- * @property {{ts:string, name:string, input:object}[]} toolUses
+ * @property {{ts:string, id:string|null, name:string, input:object, result?:string, isError?:boolean}[]} toolUses
+ *           `result` is the (truncated) output of a Bash call, when the transcript has it
  * @property {{ts:string, text:string}[]} assistantTexts  final text of each assistant turn
  * @property {number} lines  number of lines successfully parsed
  */
@@ -55,6 +57,9 @@ export function parseTranscript(text) {
     assistantTexts: [],
     lines: 0,
   };
+
+  /** tool_use id -> Bash tool use still waiting for its result */
+  const pendingBash = new Map();
 
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -86,6 +91,7 @@ export function parseTranscript(text) {
     const content = rec.message?.content;
     if (rec.type === 'user') {
       if (rec.isMeta) continue;
+      attachResults(content, pendingBash);
       const prompt = extractPrompt(content);
       if (prompt) out.prompts.push({ ts: rec.timestamp ?? '', text: prompt });
       continue;
@@ -95,13 +101,36 @@ export function parseTranscript(text) {
     if (!Array.isArray(content)) continue;
     for (const block of content) {
       if (block?.type === 'tool_use' && typeof block.name === 'string') {
-        out.toolUses.push({ ts: rec.timestamp ?? '', name: block.name, input: block.input ?? {} });
+        const use = { ts: rec.timestamp ?? '', id: block.id ?? null, name: block.name, input: block.input ?? {} };
+        out.toolUses.push(use);
+        if (use.name === 'Bash' && use.id) pendingBash.set(use.id, use);
       } else if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
         out.assistantTexts.push({ ts: rec.timestamp ?? '', text: block.text.trim() });
       }
     }
   }
   return out;
+}
+
+/** Bash output kept per call; commit lines are near the top, so the head is enough. */
+const RESULT_CHARS = 4000;
+
+function attachResults(content, pending) {
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (block?.type !== 'tool_result') continue;
+    const use = pending.get(block.tool_use_id);
+    if (!use) continue;
+    pending.delete(block.tool_use_id);
+    const text =
+      typeof block.content === 'string'
+        ? block.content
+        : Array.isArray(block.content)
+          ? block.content.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n')
+          : '';
+    use.result = text.slice(0, RESULT_CHARS);
+    use.isError = block.is_error === true;
+  }
 }
 
 /** Join the user's own text blocks, ignoring everything Claude Code injected. */

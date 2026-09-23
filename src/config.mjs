@@ -44,6 +44,7 @@ export const limits = {
   commandChars: intEnv('CLAUDE_MEM_LITE_COMMAND_CHARS', 200),
   files: intEnv('CLAUDE_MEM_LITE_MAX_FILES', 200),
   outcomeChars: intEnv('CLAUDE_MEM_LITE_OUTCOME_CHARS', 600),
+  commits: 30,
 };
 
 /**

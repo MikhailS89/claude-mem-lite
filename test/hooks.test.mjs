@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { sampleSession, toJsonl } from './helpers.mjs';
+import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'cml-hooks-'));
@@ -104,6 +104,7 @@ test('CLI search, show, recent and file work against the stored session', () => 
   assert.match(r.stdout, /Prompts:/);
   assert.match(r.stdout, /src\/auth\.ts \(edit/);
   assert.match(r.stdout, /\[REDACTED\]/);
+  assert.doesNotMatch(r.stdout, /Tools:/);
 
   r = runCli(['--all', 'file', 'auth.test']);
   assert.match(r.stdout, /sess-1/);
@@ -137,6 +138,41 @@ test('per-project marker file disables capture and recall', () => {
   assert.equal(existsSync(join(dataDir, 'memory.db')), false);
   const log = readFileSync(join(dataDir, 'hooks.log'), 'utf8');
   assert.match(log, /disabled for project/);
+});
+
+test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
+  const dataDir = join(tmp, 'git-state');
+  const repo = join(tmp, 'repo-with-head');
+  const sha = (c) => c.repeat(40);
+  mkdirSync(join(repo, '.git', 'refs', 'heads'), { recursive: true });
+  writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${sha('3')}\n`);
+  const transcript = join(tmp, 'sess-c.jsonl');
+  writeFileSync(transcript, toJsonl(commitSession({ cwd: repo })));
+  const input = { session_id: 'sess-c', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' };
+
+  let r = runHook('session-stop.mjs', input, {}, dataDir);
+  assert.equal(r.status, 0, r.stderr);
+
+  const recap = () => {
+    const res = runHook('session-start.mjs', { ...input, session_id: 'next', hook_event_name: 'SessionStart' }, {}, dataDir);
+    assert.equal(res.status, 0, res.stderr);
+    return JSON.parse(res.stdout).hookSpecificOutput.additionalContext;
+  };
+  let ctx = recap();
+  assert.match(ctx, /1111111 feat: stage 0 skeleton/);
+  assert.match(ctx, /3333333 feat: stage 1 content model/);
+  assert.match(ctx, /HEAD at end: 3333333 \(main\) · edited after last commit: README\.md/);
+  assert.match(ctx, /docs changed: docs\/ARCHITECTURE\.md, README\.md/);
+  assert.doesNotMatch(ctx, /tool calls/);
+
+  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${sha('9')}\n`);
+  ctx = recap();
+  assert.match(ctx, /HEAD at end: 3333333 \(main\), now 9999999/);
+
+  r = runCli(['show', 'sess-c'], dataDir);
+  assert.match(r.stdout, /Commits:\n {2}1111111 feat: stage 0 skeleton\n {2}3333333 feat: stage 1 content model/);
+  assert.match(r.stdout, /HEAD at end: 3333333 \(main\)\nEdited after last commit: README\.md/);
 });
 
 test('a missing transcript is skipped without creating anything', () => {

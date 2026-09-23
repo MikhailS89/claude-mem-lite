@@ -19,7 +19,7 @@ node --no-warnings "${CLAUDE_PLUGIN_ROOT}/scripts/search.mjs" <subcommand> [flag
 
 Subcommands:
 
-- `<words...>` — full-text search across titles, prompts, file paths, commands and outcomes of past sessions in the current project.
+- `<words...>` — full-text search across titles, prompts, file paths, commands, commit messages and outcomes of past sessions in the current project.
 - `recent [--limit N]` — newest sessions first.
 - `show <session-id>` — full details of one session (an 8-char id prefix from the index is enough).
 - `file <path-fragment>` — sessions that read or edited a matching file.

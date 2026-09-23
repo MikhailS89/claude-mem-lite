@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { findGitRoot, normalizeRemote, readRemoteUrl, resolveProject } from '../src/project.mjs';
+import { findGitRoot, normalizeRemote, readHead, readRemoteUrl, resolveProject } from '../src/project.mjs';
 
 const tmp = mkdtempSync(join(tmpdir(), 'cml-project-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -67,4 +67,43 @@ test('resolveProject follows a worktree .git file', () => {
   mkdirSync(wt, { recursive: true });
   writeFileSync(join(wt, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
   assert.equal(resolveProject(wt).id, 'git:github.com/o/r');
+});
+
+test('readHead reads loose refs, packed refs, detached and unborn HEADs', () => {
+  const repo = join(tmp, 'head-repo');
+  const sha1 = 'a'.repeat(40);
+  const sha2 = 'b'.repeat(40);
+  mkdirSync(join(repo, '.git', 'refs', 'heads', 'feature'), { recursive: true });
+
+  writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${sha1}\n`);
+  assert.deepEqual(readHead(repo), { ref: 'main', sha: sha1 });
+
+  writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/feature/x\n');
+  writeFileSync(join(repo, '.git', 'packed-refs'), `# pack-refs with: peeled fully-peeled sorted\n${sha2} refs/heads/feature/x\n^${sha1}\n`);
+  assert.deepEqual(readHead(repo), { ref: 'feature/x', sha: sha2 });
+
+  writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/unborn\n');
+  assert.deepEqual(readHead(repo), { ref: 'unborn', sha: null });
+
+  writeFileSync(join(repo, '.git', 'HEAD'), `${sha2.toUpperCase()}\n`);
+  assert.deepEqual(readHead(repo), { ref: null, sha: sha2 });
+
+  assert.equal(readHead(join(tmp, 'not-a-repo')), null);
+  assert.equal(readHead(null), null);
+});
+
+test('readHead in a worktree uses its own HEAD and the shared refs', () => {
+  const main = join(tmp, 'main-repo2');
+  const wtGit = join(main, '.git', 'worktrees', 'wt2');
+  mkdirSync(wtGit, { recursive: true });
+  mkdirSync(join(main, '.git', 'refs', 'heads'), { recursive: true });
+  writeFileSync(join(wtGit, 'commondir'), '../..\n');
+  writeFileSync(join(wtGit, 'HEAD'), 'ref: refs/heads/topic\n');
+  writeFileSync(join(main, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(main, '.git', 'refs', 'heads', 'topic'), `${'c'.repeat(40)}\n`);
+  const wt = join(tmp, 'wt2');
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(wt, '.git'), `gitdir: ${wtGit}\n`);
+  assert.deepEqual(readHead(wt), { ref: 'topic', sha: 'c'.repeat(40) });
 });

@@ -97,14 +97,22 @@ function showSession(db, id, json) {
     for (const p of details.prompts) out.push(`  - [${fmtTime(p.ts)}] ${p.text}`);
     out.push('');
   }
+  if (details.commits?.length) {
+    out.push('Commits:', ...details.commits.map((c) => `  ${c.sha.slice(0, 7)} ${c.subject}`), '');
+  }
+  const git = details.git;
+  if (git?.head?.sha) out.push(`HEAD at end: ${git.head.sha.slice(0, 7)}${git.head.ref ? ` (${git.head.ref})` : ''}`);
+  if (Array.isArray(git?.editedAfterLastCommit)) {
+    out.push(`Edited after last commit: ${git.editedAfterLastCommit.length ? git.editedAfterLastCommit.join(', ') : 'none'}`);
+  }
+  if (git) out.push('');
   const edited = files.filter((f) => f.kind !== 'read');
   const read = files.filter((f) => f.kind === 'read');
   if (edited.length) out.push('Edited files:', ...edited.map((f) => `  - ${f.path} (${f.kind} ×${f.ops})`), '');
   if (read.length) out.push('Read files:', ...read.map((f) => `  - ${f.path} (×${f.ops})`), '');
   if (details.commands?.length) out.push('Commands:', ...details.commands.map((c) => `  $ ${c}`), '');
   if (details.outcome) out.push('Outcome:', `  ${details.outcome}`, '');
-  if (details.tools) out.push(`Tools: ${Object.entries(details.tools).map(([k, v]) => `${k}×${v}`).join(', ')}`);
-  return out.join('\n');
+  return out.join('\n').trimEnd();
 }
 
 function main() {

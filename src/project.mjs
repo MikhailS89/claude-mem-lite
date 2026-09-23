@@ -1,6 +1,6 @@
 // Project identity. We never spawn `git` (slow on Windows, may be missing):
-// the repository root is found by walking up from cwd, and the origin URL is
-// read straight from `.git/config`.
+// the repository root is found by walking up from cwd, and the origin URL and
+// HEAD are read straight from the files under `.git`.
 //
 // Identifier precedence:
 //   1. `git:<host>/<owner>/<repo>` - normalised origin URL (survives moving the folder)
@@ -21,8 +21,13 @@ export function findGitRoot(start) {
   }
 }
 
-/** Resolve the directory that holds `config` for the repo at `gitRoot`. */
-function gitCommonDir(gitRoot) {
+/**
+ * Resolve the git directories of the repo at `gitRoot`: `gitDir` holds this
+ * checkout's HEAD, `commonDir` holds `config`, `refs/` and `packed-refs`
+ * (they differ only for linked worktrees).
+ * @returns {{gitDir: string, commonDir: string}|null}
+ */
+function gitDirs(gitRoot) {
   const dotGit = join(gitRoot, '.git');
   let gitDir = dotGit;
   try {
@@ -32,15 +37,62 @@ function gitCommonDir(gitRoot) {
       if (!m) return null;
       gitDir = isAbsolute(m[1].trim()) ? m[1].trim() : resolve(gitRoot, m[1].trim());
     }
+    let commonDir = gitDir;
     const commonFile = join(gitDir, 'commondir');
     if (existsSync(commonFile)) {
       const common = readFileSync(commonFile, 'utf8').trim();
-      gitDir = isAbsolute(common) ? common : resolve(gitDir, common);
+      commonDir = isAbsolute(common) ? common : resolve(gitDir, common);
     }
-    return gitDir;
+    return { gitDir, commonDir };
   } catch {
     return null;
   }
+}
+
+function gitCommonDir(gitRoot) {
+  return gitDirs(gitRoot)?.commonDir ?? null;
+}
+
+/**
+ * Read the current HEAD straight from `.git` (no `git` process).
+ * `ref` is the branch name, or null when HEAD is detached; `sha` is null on
+ * an unborn branch (no commits yet).
+ * @returns {{ref: string|null, sha: string|null}|null} null when not a repo
+ */
+export function readHead(gitRoot) {
+  if (!gitRoot) return null;
+  const dirs = gitDirs(gitRoot);
+  if (!dirs) return null;
+  let head;
+  try {
+    head = readFileSync(join(dirs.gitDir, 'HEAD'), 'utf8').trim();
+  } catch {
+    return null;
+  }
+  const sym = /^ref:\s*(\S+)$/.exec(head);
+  if (!sym) return /^[0-9a-f]{40,64}$/i.test(head) ? { ref: null, sha: head.toLowerCase() } : null;
+  const ref = sym[1];
+  return { ref: ref.replace(/^refs\/heads\//, ''), sha: resolveRef(dirs, ref) };
+}
+
+function resolveRef({ gitDir, commonDir }, ref) {
+  for (const dir of new Set([gitDir, commonDir])) {
+    try {
+      const sha = readFileSync(join(dir, ...ref.split('/')), 'utf8').trim();
+      if (/^[0-9a-f]{40,64}$/i.test(sha)) return sha.toLowerCase();
+    } catch {
+      // not a loose ref here
+    }
+  }
+  try {
+    for (const line of readFileSync(join(commonDir, 'packed-refs'), 'utf8').split(/\r?\n/)) {
+      const m = /^([0-9a-f]{40,64}) (\S+)$/i.exec(line);
+      if (m && m[2] === ref) return m[1].toLowerCase();
+    }
+  } catch {
+    // no packed-refs
+  }
+  return null;
 }
 
 /** Parse `.git/config` and return the URL of remote "origin" (or the first remote). */

@@ -49,6 +49,18 @@ test('upsertSession is idempotent and refreshes files + fts', () => {
   assert.equal(db.db.prepare('SELECT COUNT(*) AS n FROM sessions_fts').get().n, 3);
 });
 
+test('search finds a session by a commit subject or sha', () => {
+  const db = seeded();
+  db.upsertSession(
+    session('s4', projectA.id, {
+      details: { prompts: [], commits: [{ sha: 'ae2da15', subject: 'feat: контент-модель каталога', branch: 'main' }] },
+    }),
+    [],
+  );
+  assert.deepEqual(db.search('контент-модель', { projectId: projectA.id }).map((s) => s.id), ['s4']);
+  assert.deepEqual(db.search('ae2da15', { projectId: projectA.id }).map((s) => s.id), ['s4']);
+});
+
 test('recentSessions scopes by project and excludes the current session', () => {
   const db = seeded();
   assert.deepEqual(

@@ -4,7 +4,7 @@
 //   projects      one row per project identity (see project.mjs)
 //   sessions      one row per Claude Code session: short `summary` + JSON `details`
 //   session_files files touched per session, for "what touched X?" queries
-//   sessions_fts  FTS5 index over title + summary + a body of prompts/files/commands
+//   sessions_fts  FTS5 index over title + summary + a body of prompts/files/commands/commits
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -259,6 +259,7 @@ function fulltextBody(details, files) {
   for (const p of d.prompts ?? []) chunks.push(p.text);
   for (const f of files ?? []) chunks.push(f.path);
   for (const c of d.commands ?? []) chunks.push(c);
+  for (const c of d.commits ?? []) chunks.push(`${c.sha} ${c.subject}`);
   if (d.outcome) chunks.push(d.outcome);
   return chunks.join('\n');
 }

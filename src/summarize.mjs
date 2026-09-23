@@ -30,18 +30,51 @@ function uniq(list) {
 }
 
 /**
+ * `git commit` (and cherry-pick / revert / merge) print one line per new
+ * commit: `[main 542b65e] subject`, `[main (root-commit) 542b65e] subject`,
+ * `[detached HEAD 542b65e] subject`.
+ */
+const COMMIT_LINE = /^\[(.+?) ([0-9a-f]{7,64})\] (.+)$/gm;
+
+/**
+ * Commits a single Bash call made, read from its output. Only calls that ran
+ * `git` count, so printing a file that happens to contain such a line does not.
+ * @returns {{sha:string, subject:string, branch:string|null}[]}
+ */
+export function commitsFromBash(command, result) {
+  if (!result || !/\bgit\b/.test(command ?? '')) return [];
+  const out = [];
+  for (const m of String(result).matchAll(COMMIT_LINE)) {
+    const branch = m[1].replace(/\s*\(root-commit\)$/, '').trim();
+    out.push({ sha: m[2].toLowerCase(), subject: truncate(sanitize(m[3]), 120), branch: /^detached HEAD\b/.test(branch) ? null : branch });
+  }
+  return out;
+}
+
+/** Files under `docs/` and prose files: edits there usually record a decision. */
+export function isDocPath(p) {
+  return /(^|\/)docs?\//i.test(p) || /\.(md|mdx|markdown|rst|adoc)$/i.test(p);
+}
+
+/**
  * @param {import('./transcript.mjs').ParsedTranscript} t
  * @param {{root: string}} project
+ * @param {{head?: {ref: string|null, sha: string|null}|null}} [opts]
+ *        HEAD of the repository at capture time (read by the caller)
  */
-export function summarize(t, project) {
+export function summarize(t, project, { head = null } = {}) {
   const root = project?.root ?? null;
 
-  // --- files ---------------------------------------------------------------
+  // --- files, commands, commits ----------------------------------------------
   /** @type {Map<string, {path:string, kind:string, ops:number}>} */
   const files = new Map();
   const commands = [];
   const searches = [];
   const tools = {};
+  /** @type {{sha:string, subject:string, branch:string|null, ts:string}[]} */
+  const commits = [];
+  /** Files edited since the last commit of this session (in call order). */
+  let editedSinceCommit = new Set();
   let sensitiveTouches = 0;
 
   for (const use of t.toolUses) {
@@ -56,10 +89,24 @@ export function summarize(t, project) {
       const cur = files.get(key) ?? { path: key, kind: 'read', ops: 0 };
       cur.ops++;
       // edit/write outranks read
-      if (d.file.kind !== 'read') cur.kind = cur.kind === 'read' ? d.file.kind : cur.kind;
+      if (d.file.kind !== 'read') {
+        cur.kind = cur.kind === 'read' ? d.file.kind : cur.kind;
+        editedSinceCommit.add(key);
+      }
       files.set(key, cur);
     } else if (d.command) {
       commands.push(truncate(sanitize(d.command), limits.commandChars));
+      const made = use.isError ? [] : commitsFromBash(d.command, use.result);
+      if (made.length) {
+        // `--amend` rewrites the previous commit instead of adding one.
+        if (/--amend\b/.test(d.command) && commits.length) commits.pop();
+        for (const c of made) {
+          const dup = commits.findIndex((x) => x.sha === c.sha);
+          if (dup !== -1) commits.splice(dup, 1);
+          commits.push({ ...c, ts: use.ts });
+        }
+        editedSinceCommit = new Set();
+      }
     } else if (d.search) {
       searches.push(truncate(sanitize(d.search), 80));
     }
@@ -92,20 +139,34 @@ export function summarize(t, project) {
     filesRead: read.length,
     commands: commands.length,
     durationMin,
+    commits: commits.length,
     sensitiveTouches,
+  };
+
+  // --- git state at the end of the session -----------------------------------
+  const git = {
+    head: head && (head.sha || head.ref) ? { ref: head.ref ?? null, sha: head.sha ?? null } : null,
+    // Only meaningful relative to a commit made in this session. These are
+    // Claude's own edits: changes made outside the session are invisible here,
+    // so this is never a claim that the working tree is clean.
+    editedAfterLastCommit: commits.length ? [...editedSinceCommit].slice(0, limits.files) : null,
   };
 
   // --- index-level summary ---------------------------------------------------
   const parts = [];
   if (title) parts.push(title);
-  parts.push(`${stats.prompts} prompt${stats.prompts === 1 ? '' : 's'}, ${stats.toolCalls} tool calls`);
-  if (edited.length) parts.push(`edited: ${listPreview(edited, 6)}`);
-  else if (read.length) parts.push(`read: ${listPreview(read, 4)}`);
+  if (commits.length) parts.push(`commits: ${listPreview(commits.map((c) => `${c.sha.slice(0, 7)} ${c.subject}`).reverse(), 3)}`);
+  if (git.head?.sha) parts.push(`HEAD ${git.head.sha.slice(0, 7)}`);
+  const docs = edited.filter(isDocPath);
+  if (docs.length) parts.push(`docs: ${listPreview(docs, 4)}`);
+  const code = edited.filter((p) => !isDocPath(p));
+  if (code.length) parts.push(`edited: ${listPreview(code, 6)}`);
+  else if (!edited.length && read.length) parts.push(`read: ${listPreview(read, 4)}`);
   const cmdPreview = uniq(commands.map(commandHead)).filter(Boolean);
-  if (cmdPreview.length) parts.push(`ran: ${listPreview(cmdPreview, 5)}`);
+  if (cmdPreview.length && !commits.length) parts.push(`ran: ${listPreview(cmdPreview, 5)}`);
   if (lastPrompt && lastPrompt !== firstPrompt) parts.push(`last request: "${truncate(lastPrompt, 140)}"`);
   else if (firstPrompt && !t.title) parts.push(`request: "${truncate(firstPrompt, 140)}"`);
-  if (outcome) parts.push(`outcome: "${truncate(outcome, 200)}"`);
+  if (outcome && !commits.length) parts.push(`outcome: "${briefText(outcome, 200)}"`);
   const summary = parts.join(' · ');
 
   const details = {
@@ -115,12 +176,39 @@ export function summarize(t, project) {
     filesRead: read.slice(0, limits.files),
     commands: uniq(commands).slice(-limits.commands),
     searches: uniq(searches).slice(0, 20),
+    commits: commits.slice(-limits.commits),
+    git,
     tools,
     outcome,
     stats,
   };
 
   return { title, summary, details, files: fileList.slice(0, limits.files), stats };
+}
+
+/**
+ * Shorten an assistant message for display: drop code blocks, tables and
+ * markdown markup, then cut at a sentence boundary rather than mid-phrase.
+ */
+export function briefText(text, max) {
+  let s = String(text ?? '')
+    .replace(/```[\s\S]*?(```|$)/g, ' ') // fenced code (also an unclosed one)
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\|/.test(line)) // table rows
+    .map((line) => line.replace(/^\s*#{1,6}\s+/, '').replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''))
+    .join('\n')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // [text](link)
+    .replace(/(\*\*|__|`)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length <= max) return s;
+  const head = s.slice(0, max);
+  let cut = -1;
+  for (const m of head.matchAll(/[.!?…](?=\s)/g)) cut = m.index + 1;
+  if (cut >= max * 0.4) return head.slice(0, cut);
+  s = head.slice(0, max - 1);
+  const space = s.lastIndexOf(' ');
+  return (space > max * 0.4 ? s.slice(0, space) : s).trimEnd() + '…';
 }
 
 /** "npm test", "git commit", "node scripts/x.mjs" - the first one or two words of a command. */

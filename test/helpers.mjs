@@ -76,3 +76,32 @@ export function sampleSession(overrides = {}) {
     assistantText('Docs updated in README.md.', o),
   ];
 }
+
+/** A Bash call plus its result, linked by tool_use id as in real transcripts. */
+export function bash(command, output, { isError = false, ...opts } = {}) {
+  const id = `toolu_bash_${counter}`;
+  return [
+    assistantBlocks([{ type: 'tool_use', id, name: 'Bash', input: { command } }], opts),
+    userPrompt([{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: output }], is_error: isError }], opts),
+  ];
+}
+
+/** A session that commits twice, amends, fails one commit and keeps editing afterwards. */
+export function commitSession(overrides = {}) {
+  const o = { sessionId: 'sess-c', cwd: 'C:\\proj', ...overrides };
+  const f = (rel) => `${o.cwd}\\${rel}`;
+  return [
+    userPrompt('Implement stage 1', o),
+    toolUse('Edit', { file_path: f('src\\a.ts'), old_string: 'a', new_string: 'b' }, o),
+    toolUse('Edit', { file_path: f('docs\\ARCHITECTURE.md'), old_string: 'a', new_string: 'b' }, o),
+    ...bash('git add -A && git commit -m "feat: stage 0 skeleton"', '[main (root-commit) 1111111] feat: stage 0 skeleton\n 2 files changed', o),
+    toolUse('Edit', { file_path: f('src\\b.ts'), old_string: 'a', new_string: 'b' }, o),
+    ...bash('git commit -am "feat: stage 1 content modle"', '[main 2222222] feat: stage 1 content modle\n 1 file changed', o),
+    ...bash('git commit --amend -m "feat: stage 1 content model"', '[main 3333333] feat: stage 1 content model\n Date: now', o),
+    ...bash('git commit -m "wip"', 'pre-commit hook failed\n[main 4444444] wip', { ...o, isError: true }),
+    ...bash('cat notes.txt', '[main 5555555] not a real commit', o),
+    toolUse('Write', { file_path: f('README.md'), content: 'x' }, o),
+    toolUse('Edit', { file_path: f('.env'), old_string: 'a', new_string: 'b' }, o),
+    assistantText('## Done\n\nStage 1 is **committed**. Next: `stage 2`.\n\n| a | b |\n|---|---|\n\n```js\ncode()\n```', o),
+  ];
+}

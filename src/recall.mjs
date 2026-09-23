@@ -7,8 +7,8 @@ import { existsSync } from 'node:fs';
 import { dbPath, enabled, isDisabledForProject, recallMaxChars, recallSessions } from './config.mjs';
 import { MemoryDb } from './db.mjs';
 import { truncate } from './privacy.mjs';
-import { resolveProject } from './project.mjs';
-import { commandHead } from './summarize.mjs';
+import { findGitRoot, readHead, resolveProject } from './project.mjs';
+import { briefText, commandHead, isDocPath } from './summarize.mjs';
 
 /** Format an ISO timestamp as `YYYY-MM-DD HH:MM` in local time. */
 export function fmtTime(iso) {
@@ -30,24 +30,71 @@ export function isLikelyOpen(s, now = Date.now()) {
   return Number.isFinite(t) && now - t < 2 * 60 * 60 * 1000;
 }
 
-/** One session -> a few lines of markdown. */
-export function formatSessionBrief(s) {
+/** Commits shown per session; older ones are counted, not listed. */
+const RECAP_COMMITS = 8;
+
+/**
+ * One session -> a few lines of markdown. Leads with state (commits, HEAD,
+ * uncommitted edits) rather than activity. Rows written by older versions
+ * have no commits/git in `details` and fall back to the activity lines.
+ * @param {object} s session row
+ * @param {{currentHead?: {ref:string|null, sha:string|null}|null}} [opts]
+ *        HEAD of the repository now, to tell whether it moved since
+ */
+export function formatSessionBrief(s, { currentHead = null } = {}) {
   const d = safeJson(s.details);
-  const head = [`### ${fmtTime(s.started_at ?? s.updated_at)}`, s.branch ? `· ${s.branch}` : '', s.title ? `· ${s.title}` : '']
+  const title = [`### ${fmtTime(s.started_at ?? s.updated_at)}`, s.branch ? `· ${s.branch}` : '', s.title ? `· ${s.title}` : '']
     .filter(Boolean)
     .join(' ');
-  const lines = [head];
+  const lines = [title];
+  const commits = d.commits ?? [];
+  const git = d.git ?? null;
+
+  if (commits.length) {
+    const shown = commits.slice(-RECAP_COMMITS);
+    const earlier = commits.length - shown.length;
+    lines.push(`- commits${earlier ? ` (last ${shown.length} of ${commits.length})` : ''}:`);
+    for (const c of shown) lines.push(`  - ${c.sha.slice(0, 7)} ${c.subject}`);
+  }
+  const headLine = formatHead(git, currentHead);
+  if (headLine) lines.push(`- ${headLine}`);
+
   const edited = d.filesEdited ?? [];
   const read = d.filesRead ?? [];
-  if (edited.length) lines.push(`- edited: ${preview(edited, 8)}`);
+  const docs = edited.filter(isDocPath);
+  const code = edited.filter((p) => !isDocPath(p));
+  if (docs.length) lines.push(`- docs changed: ${preview(docs, 6)}`);
+  if (code.length) lines.push(`- edited: ${preview(code, 8)}`);
   if (read.length && !edited.length) lines.push(`- read: ${preview(read, 6)}`);
   const cmds = [...new Set((d.commands ?? []).map(commandHead).filter(Boolean))];
-  if (cmds.length) lines.push(`- ran: ${preview(cmds, 8)}`);
+  // With commits, the commit list says what the commands were for.
+  if (cmds.length && !commits.length) lines.push(`- ran: ${preview(cmds, 8)}`);
   const prompts = d.prompts ?? [];
   if (prompts.length) lines.push(`- last request: ${truncate(prompts[prompts.length - 1].text, 200)}`);
-  if (d.outcome) lines.push(`- outcome: ${truncate(d.outcome, 300)}`);
-  lines.push(`- session: ${s.id.slice(0, 8)} (${s.prompts} prompts, ${s.tool_calls} tool calls${isLikelyOpen(s) ? ', possibly still open' : ''})`);
+  // Without commits (a discussion, a review) the last answer is the only record of what was agreed.
+  if (d.outcome && !commits.length) lines.push(`- outcome: ${briefText(d.outcome, 300)}`);
+  lines.push(`- session: ${s.id.slice(0, 8)}${isLikelyOpen(s) ? ' (possibly still open)' : ''}`);
   return lines.join('\n');
+}
+
+/** "HEAD at end: 542b65e (main) · edited after last commit: a.ts" */
+function formatHead(git, currentHead) {
+  if (!git) return '';
+  const parts = [];
+  const sha = git.head?.sha ?? null;
+  if (sha) {
+    let s = `HEAD at end: ${sha.slice(0, 7)}`;
+    if (git.head.ref) s += ` (${git.head.ref})`;
+    if (currentHead?.sha && currentHead.sha !== sha) {
+      s += `, now ${currentHead.sha.slice(0, 7)}${currentHead.ref && currentHead.ref !== git.head.ref ? ` (${currentHead.ref})` : ''}`;
+    }
+    parts.push(s);
+  }
+  const after = git.editedAfterLastCommit;
+  if (Array.isArray(after)) {
+    parts.push(after.length ? `edited after last commit: ${preview(after, 6)}` : 'no edits after last commit');
+  }
+  return parts.join(' · ');
 }
 
 /**
@@ -76,9 +123,12 @@ export function buildRecall(input, { db = null } = {}) {
       '',
     ].join('\n');
 
+    // Only the newest session can say where things were left, so only it is
+    // compared with the current HEAD.
+    const currentHead = readHead(findGitRoot(cwd));
     let out = header;
-    for (const s of sessions) {
-      const brief = formatSessionBrief(s) + '\n\n';
+    for (const [i, s] of sessions.entries()) {
+      const brief = formatSessionBrief(s, { currentHead: i === 0 ? currentHead : null }) + '\n\n';
       if (out.length + brief.length > recallMaxChars) {
         // Always show at least one session, even if it has to be cut.
         if (out === header) out += brief.slice(0, recallMaxChars - out.length - 2) + '…\n';

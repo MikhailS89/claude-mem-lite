@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { commandHead, displayPath, summarize } from '../src/summarize.mjs';
+import { briefText, commandHead, commitsFromBash, displayPath, isDocPath, summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
-import { sampleSession, toJsonl } from './helpers.mjs';
+import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
 
 const project = { id: 'path:c:/proj', root: 'C:\\proj', name: 'proj' };
 
@@ -12,7 +12,7 @@ test('summarize produces an index-level summary and structured details', () => {
 
   assert.equal(r.title, 'Login bug fix');
   assert.match(r.summary, /Login bug fix/);
-  assert.match(r.summary, /3 prompts, 7 tool calls/);
+  assert.doesNotMatch(r.summary, /prompts|tool calls/);
   assert.match(r.summary, /edited: src\/auth\.ts, test\/auth\.test\.ts/);
   assert.match(r.summary, /ran: npm test, git commit/);
   assert.match(r.summary, /last request: "Thanks, also update the docs"/);
@@ -40,7 +40,7 @@ test('summarize never stores sensitive files, secrets or private text', () => {
 test('summarize handles an empty transcript', () => {
   const r = summarize(parseTranscript(''), project);
   assert.equal(r.title, '');
-  assert.match(r.summary, /0 prompts, 0 tool calls/);
+  assert.equal(r.summary, '');
   assert.equal(r.files.length, 0);
 });
 
@@ -59,4 +59,55 @@ test('commandHead reduces a command line to its verb', () => {
   assert.equal(commandHead('git -C x status'), 'git');
   assert.equal(commandHead('/usr/bin/python3 -m pytest'), 'python3');
   assert.equal(commandHead(''), '');
+});
+
+test('summarize records commits, amends and edits after the last commit', () => {
+  const t = parseTranscript(toJsonl(commitSession()));
+  const r = summarize(t, project, { head: { ref: 'main', sha: '3333333aaaabbbbccccddddeeeeffff000011112' } });
+
+  assert.deepEqual(
+    r.details.commits.map((c) => [c.sha, c.subject, c.branch]),
+    [
+      ['1111111', 'feat: stage 0 skeleton', 'main'],
+      ['3333333', 'feat: stage 1 content model', 'main'],
+    ],
+    'amend replaces, failed and non-git output are ignored',
+  );
+  assert.equal(r.stats.commits, 2);
+  assert.deepEqual(r.details.git.head, { ref: 'main', sha: '3333333aaaabbbbccccddddeeeeffff000011112' });
+  assert.deepEqual(r.details.git.editedAfterLastCommit, ['README.md'], 'sensitive files stay out');
+
+  assert.match(r.summary, /commits: 3333333 feat: stage 1 content model, 1111111 feat: stage 0 skeleton/);
+  assert.match(r.summary, /HEAD 3333333/);
+  assert.match(r.summary, /docs: docs\/ARCHITECTURE\.md, README\.md/);
+  assert.match(r.summary, /edited: src\/a\.ts, src\/b\.ts/);
+  assert.doesNotMatch(r.summary, /ran:|outcome:/, 'commits replace commands and outcome');
+  assert.ok(r.details.outcome, 'outcome is still stored for search');
+});
+
+test('summarize without commits keeps outcome and makes no claim about the tree', () => {
+  const r = summarize(parseTranscript(toJsonl(sampleSession())), project, { head: { ref: 'main', sha: 'a'.repeat(40) } });
+  assert.deepEqual(r.details.commits, []);
+  assert.equal(r.details.git.editedAfterLastCommit, null);
+  assert.equal(summarize(parseTranscript(''), project).details.git.head, null);
+});
+
+test('commitsFromBash only trusts git commands', () => {
+  assert.deepEqual(commitsFromBash('git cherry-pick x', '[detached HEAD abcdef1] fix it'), [{ sha: 'abcdef1', subject: 'fix it', branch: null }]);
+  assert.deepEqual(commitsFromBash('cat log.txt', '[main abcdef1] fix it'), []);
+  assert.deepEqual(commitsFromBash('git commit -m x', 'nothing to commit, working tree clean'), []);
+  assert.equal(commitsFromBash('git commit -m x', '[feature/x 1234567] add token=ghp_abcdefghijklmnopqrstuvwxyz0123456789')[0].branch, 'feature/x');
+  assert.doesNotMatch(commitsFromBash('git commit', '[m 1234567] ghp_abcdefghijklmnopqrstuvwxyz0123456789')[0].subject, /ghp_/);
+});
+
+test('isDocPath marks docs/ and prose files', () => {
+  for (const p of ['docs/a.ts', 'README.md', 'x/y/ARCHITECTURE.MD', 'guide.rst', 'doc/notes.txt']) assert.ok(isDocPath(p), p);
+  for (const p of ['src/md.ts', 'mydocs/a.ts', 'a.mdx.ts']) assert.ok(!isDocPath(p), p);
+});
+
+test('briefText drops markup and cuts at a sentence boundary', () => {
+  assert.equal(briefText('## Done\n\nStage 1 is **committed**. See [PLAN](PLAN.md).\n\n| a | b |\n\n```js\nx()\n```', 200), 'Done Stage 1 is committed. See PLAN.');
+  assert.equal(briefText('First sentence is here. Second one is much longer and gets cut somewhere', 40), 'First sentence is here.');
+  assert.equal(briefText('no sentence boundary at all in this long text', 20), 'no sentence…');
+  assert.ok(briefText('x'.repeat(50), 20).length <= 20);
 });

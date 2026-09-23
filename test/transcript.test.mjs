@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { describeToolUse, parseTranscript } from '../src/transcript.mjs';
-import { sampleSession, toJsonl } from './helpers.mjs';
+import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
 
 test('parseTranscript extracts prompts, tool uses, title and metadata', () => {
   const t = parseTranscript(toJsonl(sampleSession()));
@@ -45,4 +45,15 @@ test('describeToolUse maps tools to files, commands and searches', () => {
   assert.deepEqual(describeToolUse('Grep', { pattern: 'foo' }), { search: 'foo' });
   assert.deepEqual(describeToolUse('mcp__x__y', { a: 1 }), {});
   assert.deepEqual(describeToolUse('Read', {}), {});
+});
+
+test('parseTranscript attaches Bash output to its call', () => {
+  const t = parseTranscript(toJsonl(commitSession()));
+  const bashes = t.toolUses.filter((u) => u.name === 'Bash');
+  assert.equal(bashes.length, 5);
+  assert.match(bashes[0].result, /^\[main \(root-commit\) 1111111\]/);
+  assert.equal(bashes[0].isError, false);
+  assert.equal(bashes[3].isError, true);
+  assert.equal(t.prompts.length, 1, 'tool results are not prompts');
+  assert.equal(t.toolUses.find((u) => u.name === 'Edit').result, undefined);
 });
