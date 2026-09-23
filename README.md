@@ -39,7 +39,8 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
 
 Restart Claude Code (or the VS Code extension). Confirm with `claude plugin list`
 — it prints the path it loaded the plugin from and `Status: ✔ loaded`. Update
-later with `git -C ~/.claude/skills/claude-mem-lite pull`. Updates keep the
+later with `git -C ~/.claude/skills/claude-mem-lite pull`, then restart Claude
+Code and check the `Version:` line in `claude plugin list`. Updates keep the
 database; sessions recorded before an update keep their old recap format.
 
 **Option B — try it for one session** without installing:

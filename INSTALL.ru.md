@@ -60,7 +60,7 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
   ```
   Skills-directory plugins (.claude/skills/*):
     ❯ claude-mem-lite@skills-dir
-      Version: 0.1.0
+      Version: 0.2.0
       Scope: user
       Path: ~/.claude/skills/claude-mem-lite
       Status: ✔ loaded
@@ -220,12 +220,25 @@ alias mem='node ~/.claude/skills/claude-mem-lite/scripts/search.mjs'
 
 ## Обновить
 
-```bash
-git -C ~/.claude/skills/claude-mem-lite pull                     # macOS / Linux
-```
-```powershell
-git -C "$env:USERPROFILE\.claude\skills\claude-mem-lite" pull    # Windows
-```
+1. Скачайте новую версию в папку плагина:
+
+   ```bash
+   git -C ~/.claude/skills/claude-mem-lite pull                     # macOS / Linux
+   ```
+   ```powershell
+   git -C "$env:USERPROFILE\.claude\skills\claude-mem-lite" pull    # Windows
+   ```
+
+   Если вы запускали плагин через `claude --plugin-dir <папка>`, выполните
+   `git pull` в той папке.
+
+2. Перезапустите Claude Code (или VS Code). Если в новой версии менялись хуки
+   (`hooks/hooks.json`), без перезапуска они не подхватятся; перезапуск
+   ничего не стоит, поэтому делайте его всегда.
+
+3. Проверьте версию: `claude plugin list` (см. «Как убедиться, что именно
+   загрузилось» выше) должна показать новый номер в строке `Version:`.
+   Номер текущей версии — в файле `.claude-plugin/plugin.json` репозитория.
 
 База данных при обновлении не пересоздаётся, ваши сессии сохраняются. Новые
 возможности применяются только к сессиям, записанным после обновления: старые
@@ -233,7 +246,10 @@ git -C "$env:USERPROFILE\.claude\skills\claude-mem-lite" pull    # Windows
 коммиты сессии и HEAD на момент её окончания, но у сессий, записанных до
 обновления, этих строк не будет. Это не значит, что обновление не сработало.
 
-и перезапустить Claude Code (изменения в хуках без перезапуска не подхватываются).
+Если `git pull` ругается на локальные изменения, значит файлы в папке плагина
+правились вручную. Посмотрите их командой `git -C <папка плагина> status`;
+если они не нужны, откатите их через `git -C <папка плагина> checkout -- .`
+и повторите `pull`.
 
 ## Если что-то не так
 
