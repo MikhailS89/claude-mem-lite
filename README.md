@@ -3,8 +3,9 @@
 Local, offline, auditable session memory for [Claude Code](https://code.claude.com).
 
 At the end of every assistant turn the plugin compresses the current session's
-transcript into a short record (what you asked, which files were edited, which
-commands ran, how it ended) and stores it in a SQLite file on your machine.
+transcript into a short record (the commits it made, where HEAD was when it
+ended, which files and docs were edited, what you asked last) and stores it in
+a SQLite file on your machine.
 When you start a new session in the same project, a compact recap of the last
 few sessions is injected into Claude's context, and a `mem-search` skill lets
 Claude (or you) dig up older sessions on demand.
@@ -38,7 +39,8 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
 
 Restart Claude Code (or the VS Code extension). Confirm with `claude plugin list`
 — it prints the path it loaded the plugin from and `Status: ✔ loaded`. Update
-later with `git -C ~/.claude/skills/claude-mem-lite pull`.
+later with `git -C ~/.claude/skills/claude-mem-lite pull`. Updates keep the
+database; sessions recorded before an update keep their old recap format.
 
 **Option B — try it for one session** without installing:
 
@@ -60,19 +62,37 @@ plugin on your machine before enabling it.
 # claude-mem-lite: previous sessions in this project (shopkit)
 12 sessions stored locally. Newest first. For details or to search older work use the `mem-search` skill.
 ### 2026-09-21 17:59 · main · Архитектура E-commerce проекта
-- edited: AGENTS.md, CLAUDE.md, CONTEXT.md, shopkit-core/composer.json (+16 more)
-- ran: git init, git commit, pnpm install, pnpm lint, docker (+9 more)
+- commits:
+  - a1c93f0 chore: stage 0 skeleton (pnpm workspace, docker)
+  - b886776 docs: fix caching decision in CONTEXT.md
+- HEAD at end: b886776 (main), now c02d4e1 · edited after last commit: shopkit-core/composer.json
+- docs changed: AGENTS.md, CLAUDE.md, CONTEXT.md
+- edited: shopkit-core/composer.json, shopkit-core/src/Cache.php (+14 more)
 - last request: Понял, давай зафиксируем кэш
-- outcome: Зафиксировано (`b886776`). CONTEXT.md — 53 строки: …
-- session: ac6ab616 (20 prompts, 107 tool calls)
+- session: ac6ab616
 ```
 
 Five sessions, at most ~4 000 characters (~1 000 tokens). That is the whole
 per-session cost of the plugin.
 
+The recap describes where the work was left, not how busy the session was:
+
+- **commits** are read from `git commit` output in the transcript (last 8 per
+  session; amended commits replace the original, failed ones are skipped).
+- **HEAD at end** is read from `.git` when the session last saved; for the
+  newest session the recap adds `now <sha>` if HEAD has moved since.
+- **edited after last commit** lists Claude's own edits after its last commit
+  in that session. Edits you made outside the session are invisible to the
+  plugin, so it never claims the working tree is clean.
+- **docs changed** (`docs/`, `*.md`, `*.rst`…) is listed before other files:
+  a doc edit usually records a decision, and the doc is where to read it.
+- Sessions without commits (a review, a discussion) show `ran:` and a cleaned-up
+  `outcome:` (Claude's last message cut at a sentence boundary) instead.
+
 **`/claude-mem-lite:mem-search <words>`** — Claude searches the database
-(full-text over titles, prompts, file paths, commands and outcomes), picks the
-relevant sessions and, only if needed, pulls the full details of one of them.
+(full-text over titles, prompts, file paths, commands, commit messages and
+outcomes), picks the relevant sessions and, only if needed, pulls the full
+details of one of them.
 This is the "progressive disclosure" idea from the original: a cheap index
 first, expensive details only on request.
 
@@ -104,11 +124,15 @@ Per session:
 | edited / read files | paths from `Read`/`Edit`/`Write`/`NotebookEdit` tool calls, relative to the project | 200 |
 | commands | `Bash` command lines | last 40, 200 chars each |
 | search patterns | `Grep`/`Glob` patterns | 20 |
+| commits | `[branch sha] subject` lines printed by `git` commands in the session | last 30, 120 chars each |
+| git state | HEAD branch and sha when the session last saved; files edited after the last commit | |
 | outcome | first 600 chars of Claude's final message | 600 chars |
 | stats | prompt count, tool call count, tools used, duration, branch | |
 
 **Not stored:** file contents, tool outputs, diffs (`old_string`/`new_string`),
-Claude's thinking, subagent activity, anything from tool results.
+Claude's thinking, subagent activity. The only thing taken from tool results
+is the commit line above: output of `Bash` calls that ran `git` is scanned for
+it in memory and discarded.
 
 Projects are identified by the normalised git `origin` URL
 (`git:github.com/owner/repo`, so ssh and https clones share memory), falling
@@ -122,7 +146,7 @@ repo twice? Same memory.
   `id_rsa*`, `.npmrc`, `.netrc`, `credentials*`, anything under `.ssh/`,
   `.aws/`, `.gnupg/`, `.kube/`, `.docker/` … (full list in
   [src/privacy.mjs](src/privacy.mjs)). Templates like `.env.example` are fine.
-- **Secret-looking strings** in prompts, commands and outcomes are masked:
+- **Secret-looking strings** in prompts, commands, commit subjects and outcomes are masked:
   Anthropic/OpenAI/GitHub/GitLab/Slack/AWS/Google/npm token formats, JWTs,
   `Bearer …` headers, `user:password@host` URLs, `password=…` / `api_key: …`
   pairs, PEM private keys.
@@ -161,7 +185,7 @@ scripts/session-*.mjs        hook entry points (a few lines each)
 scripts/search.mjs           CLI
 src/config.mjs               env-driven settings
 src/hook-io.mjs              stdin JSON in, JSON out, never fail
-src/project.mjs              project identity from .git/config (no git spawn)
+src/project.mjs              project identity and HEAD, read from .git (no git spawn)
 src/transcript.mjs           .jsonl parser
 src/privacy.mjs              <private>, sensitive paths, secret redaction
 src/summarize.mjs            heuristic compression

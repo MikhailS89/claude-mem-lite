@@ -75,7 +75,21 @@ itself is unreliable. Fix: on capture, mark any *other* `active` session of the
 same project older than N hours as `ended` — a session that has not been
 written to in hours is over.
 
-### 1.6 Low-value sessions take up recap slots
+### 1.6 One record per session, not per unit of work
+
+A long session that goes through several stages is still one recap entry.
+Since 0.2.0 the entry lists the session's commits, which already reads as
+"stage 0: skeleton · stage 1: content model", so splitting the record itself
+by commits was deliberately not done: the session row is upserted by id after
+every turn, and splitting would change the data model for little extra value.
+Revisit only if sessions with 20+ commits turn out to be common.
+
+The feedback that led to 0.2.0 also warned against two tempting additions,
+and both still stand: no "record a decision" command (it costs a tool call
+and gets forgotten), and no extracting decisions from prose. Decisions live
+in the repository's docs; the recap points at the docs that changed.
+
+### 1.7 Low-value sessions take up recap slots
 
 "Привет, напомни на чём остановились" — one prompt, zero tool calls — occupies
 one of the five recap slots just like a session that edited 20 files. Fix:
