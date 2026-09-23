@@ -59,10 +59,12 @@ export function isDocPath(p) {
 /**
  * @param {import('./transcript.mjs').ParsedTranscript} t
  * @param {{root: string}} project
- * @param {{head?: {ref: string|null, sha: string|null}|null}} [opts]
- *        HEAD of the repository at capture time (read by the caller)
+ * @param {{head?: {ref: string|null, sha: string|null}|null, headCommits?: {sha:string, subject:string, time:number}[], commitExists?: ((sha:string) => boolean)|null}} [opts]
+ *        HEAD of the repository at capture time, the commits on HEAD made
+ *        since the session started, and a check that a commit seen in the
+ *        transcript belongs to this repository (all backed by `.git`)
  */
-export function summarize(t, project, { head = null } = {}) {
+export function summarize(t, project, { head = null, headCommits = [], commitExists = null } = {}) {
   const root = project?.root ?? null;
 
   // --- files, commands, commits ----------------------------------------------
@@ -73,8 +75,8 @@ export function summarize(t, project, { head = null } = {}) {
   const tools = {};
   /** @type {{sha:string, subject:string, branch:string|null, ts:string}[]} */
   const commits = [];
-  /** Files edited since the last commit of this session (in call order). */
-  let editedSinceCommit = new Set();
+  /** Every edit with its time, to find the ones after the last commit. */
+  const edits = [];
   let sensitiveTouches = 0;
 
   for (const use of t.toolUses) {
@@ -91,12 +93,13 @@ export function summarize(t, project, { head = null } = {}) {
       // edit/write outranks read
       if (d.file.kind !== 'read') {
         cur.kind = cur.kind === 'read' ? d.file.kind : cur.kind;
-        editedSinceCommit.add(key);
+        edits.push({ path: key, ms: Date.parse(use.ts) });
       }
       files.set(key, cur);
     } else if (d.command) {
       commands.push(truncate(sanitize(d.command), limits.commandChars));
-      const made = use.isError ? [] : commitsFromBash(d.command, use.result);
+      // Output alone does not say which repository the commit was made in.
+      const made = (use.isError ? [] : commitsFromBash(d.command, use.result)).filter((c) => !commitExists || commitExists(c.sha));
       if (made.length) {
         // `--amend` rewrites the previous commit instead of adding one.
         if (/--amend\b/.test(d.command) && commits.length) commits.pop();
@@ -105,12 +108,20 @@ export function summarize(t, project, { head = null } = {}) {
           if (dup !== -1) commits.splice(dup, 1);
           commits.push({ ...c, ts: use.ts });
         }
-        editedSinceCommit = new Set();
       }
     } else if (d.search) {
       searches.push(truncate(sanitize(d.search), 80));
     }
   }
+
+  // Commits on HEAD read from `.git` catch what the transcript cannot show:
+  // `git commit -q`, commits made in a terminal next to the session.
+  for (const c of headCommits) {
+    if (commits.some((x) => c.sha.startsWith(x.sha) || x.sha.startsWith(c.sha))) continue;
+    commits.push({ sha: c.sha, subject: truncate(sanitize(c.subject), 120), branch: head?.ref ?? null, ts: new Date(c.time).toISOString() });
+  }
+  commits.sort((a, b) => (Date.parse(a.ts) || 0) - (Date.parse(b.ts) || 0)); // stable: ties keep order
+  const lastCommitMs = commits.length ? Math.max(...commits.map((c) => Date.parse(c.ts) || 0)) : null;
 
   // Project-relative paths first, then `~/...`, then anything else absolute.
   const fileList = [...files.values()].sort((a, b) => pathRank(a.path) - pathRank(b.path));
@@ -149,7 +160,8 @@ export function summarize(t, project, { head = null } = {}) {
     // Only meaningful relative to a commit made in this session. These are
     // Claude's own edits: changes made outside the session are invisible here,
     // so this is never a claim that the working tree is clean.
-    editedAfterLastCommit: commits.length ? [...editedSinceCommit].slice(0, limits.files) : null,
+    editedAfterLastCommit:
+      lastCommitMs === null ? null : uniq(edits.filter((e) => e.ms > lastCommitMs).map((e) => e.path)).slice(0, limits.files),
   };
 
   // --- index-level summary ---------------------------------------------------

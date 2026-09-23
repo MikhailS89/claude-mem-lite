@@ -1,5 +1,28 @@
 // Builders for synthetic transcript lines, mirroring the real JSONL shape.
 
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
+
+/**
+ * Write a commit as a loose object, byte-for-byte the way git does.
+ * @returns {string} the commit sha
+ */
+export function writeLooseCommit(gitDir, { parent = null, subject, time, body = '', extraHeader = '' }) {
+  const who = `Test <t@example.com> ${Math.floor(time / 1000)} +0400`;
+  const text =
+    `tree ${'4b825dc642cb6eb9a060e54bf8d69288fbee4904'}\n` +
+    (parent ? `parent ${parent}\n` : '') +
+    `author ${who}\ncommitter ${who}\n${extraHeader}\n${subject}\n${body ? `\n${body}\n` : ''}`;
+  const content = Buffer.from(text, 'utf8');
+  const raw = Buffer.concat([Buffer.from(`commit ${content.length}\0`), content]);
+  const sha = createHash('sha1').update(raw).digest('hex');
+  mkdirSync(join(gitDir, 'objects', sha.slice(0, 2)), { recursive: true });
+  writeFileSync(join(gitDir, 'objects', sha.slice(0, 2), sha.slice(2)), deflateSync(raw));
+  return sha;
+}
+
 let counter = 0;
 const base = Date.parse('2026-09-21T09:00:00Z');
 

@@ -89,7 +89,21 @@ and both still stand: no "record a decision" command (it costs a tool call
 and gets forgotten), and no extracting decisions from prose. Decisions live
 in the repository's docs; the recap points at the docs that changed.
 
-### 1.7 Low-value sessions take up recap slots
+### 1.7 Edges of reading commits from `.git`
+
+Commits on HEAD are read from loose objects only; decoding packfiles (deltas)
+is not worth it for this. Fresh commits stay loose until `git gc`, so the walk
+normally sees everything a session made, but after a `gc` it stops early and
+the recap falls back to what the transcript printed. Two other edges:
+
+- The walk takes every commit on HEAD newer than the session start, so a
+  commit made in a parallel session on the same branch shows up in both.
+  That matches "where the branch was left", but not "what this session did".
+- Pack-index lookup (to drop commits made in other repositories) assumes
+  SHA-1 `.idx` files; in a SHA-256 repository a packed commit counts as
+  unknown and is dropped. Loose objects work for both.
+
+### 1.8 Low-value sessions take up recap slots
 
 "Привет, напомни на чём остановились" — one prompt, zero tool calls — occupies
 one of the five recap slots just like a session that edited 20 files. Fix:

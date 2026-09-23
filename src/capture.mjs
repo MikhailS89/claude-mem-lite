@@ -3,10 +3,10 @@
 // and once more at the end is safe.
 
 import { existsSync } from 'node:fs';
-import { enabled, isDisabledForProject } from './config.mjs';
+import { enabled, isDisabledForProject, limits } from './config.mjs';
 import { MemoryDb } from './db.mjs';
 import { logDebug } from './log.mjs';
-import { findGitRoot, readHead, resolveProject } from './project.mjs';
+import { findGitRoot, objectLookup, readCommits, readHead, resolveProject } from './project.mjs';
 import { summarize } from './summarize.mjs';
 import { parseTranscriptFile } from './transcript.mjs';
 
@@ -31,8 +31,12 @@ export function captureSession(input, { final = false, db = null } = {}) {
   if (transcript.prompts.length === 0 && transcript.toolUses.length === 0) return { skipped: 'empty transcript' };
 
   // Stop runs after every turn, so the last capture holds HEAD at session end.
-  const head = readHead(findGitRoot(cwd));
-  const { title, summary, details, files, stats } = summarize(transcript, project, { head });
+  const gitRoot = findGitRoot(cwd);
+  const head = readHead(gitRoot);
+  const since = Date.parse(transcript.startedAt ?? '');
+  const headCommits = head?.sha && Number.isFinite(since) ? readCommits(gitRoot, head.sha, { since, max: limits.commits }) : [];
+  const commitExists = objectLookup(gitRoot);
+  const { title, summary, details, files, stats } = summarize(transcript, project, { head, headCommits, commitExists });
 
   const own = db === null;
   const store = db ?? new MemoryDb();

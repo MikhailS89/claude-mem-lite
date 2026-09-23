@@ -77,8 +77,12 @@ per-session cost of the plugin.
 
 The recap describes where the work was left, not how busy the session was:
 
-- **commits** are read from `git commit` output in the transcript (last 8 per
-  session; amended commits replace the original, failed ones are skipped).
+- **commits** come from two places, merged: `git commit` output in the
+  transcript (amended commits replace the original, failed ones are skipped,
+  commits made in another repository are dropped), and the commits on HEAD
+  made since the session started, read from `.git/objects` — which also
+  catches `git commit -q` and commits made in a terminal next to the session.
+  The recap lists the last 8.
 - **HEAD at end** is read from `.git` when the session last saved; for the
   newest session the recap adds `now <sha>` if HEAD has moved since.
 - **edited after last commit** lists Claude's own edits after its last commit
@@ -124,7 +128,7 @@ Per session:
 | edited / read files | paths from `Read`/`Edit`/`Write`/`NotebookEdit` tool calls, relative to the project | 200 |
 | commands | `Bash` command lines | last 40, 200 chars each |
 | search patterns | `Grep`/`Glob` patterns | 20 |
-| commits | `[branch sha] subject` lines printed by `git` commands in the session | last 30, 120 chars each |
+| commits | `[branch sha] subject` lines printed by `git` commands in the session, plus commits on HEAD since the session started (from `.git`) | last 30, 120 chars each |
 | git state | HEAD branch and sha when the session last saved; files edited after the last commit | |
 | outcome | first 600 chars of Claude's final message | 600 chars |
 | stats | prompt count, tool call count, tools used, duration, branch | |
@@ -185,7 +189,7 @@ scripts/session-*.mjs        hook entry points (a few lines each)
 scripts/search.mjs           CLI
 src/config.mjs               env-driven settings
 src/hook-io.mjs              stdin JSON in, JSON out, never fail
-src/project.mjs              project identity and HEAD, read from .git (no git spawn)
+src/project.mjs              project identity, HEAD and recent commits, read from .git (no git spawn)
 src/transcript.mjs           .jsonl parser
 src/privacy.mjs              <private>, sensitive paths, secret redaction
 src/summarize.mjs            heuristic compression

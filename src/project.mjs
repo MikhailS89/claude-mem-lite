@@ -1,14 +1,15 @@
 // Project identity. We never spawn `git` (slow on Windows, may be missing):
-// the repository root is found by walking up from cwd, and the origin URL and
-// HEAD are read straight from the files under `.git`.
+// the repository root is found by walking up from cwd, and the origin URL,
+// HEAD and recent commits are read straight from the files under `.git`.
 //
 // Identifier precedence:
 //   1. `git:<host>/<owner>/<repo>` - normalised origin URL (survives moving the folder)
 //   2. `path:<repo root>`          - repository without a remote
 //   3. `path:<cwd>`                - not a git repository at all
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { inflateSync } from 'node:zlib';
 
 /** Walk up from `start` until a directory containing `.git` is found. */
 export function findGitRoot(start) {
@@ -73,6 +74,118 @@ export function readHead(gitRoot) {
   if (!sym) return /^[0-9a-f]{40,64}$/i.test(head) ? { ref: null, sha: head.toLowerCase() } : null;
   const ref = sym[1];
   return { ref: ref.replace(/^refs\/heads\//, ''), sha: resolveRef(dirs, ref) };
+}
+
+/**
+ * Commits reachable from `fromSha` along first parents, newest first, read
+ * straight from loose objects under `.git/objects` (no `git` process).
+ * Freshly made commits are loose until `git gc` packs them; the walk simply
+ * stops at the first object that is not loose, so it may return fewer
+ * commits than exist but never wrong ones.
+ * @param {string} gitRoot
+ * @param {string|null} fromSha
+ * @param {{since?: number|null, max?: number}} [opts] stop at commits whose
+ *        committer time (ms) is before `since`
+ * @returns {{sha: string, subject: string, time: number}[]} oldest first
+ */
+export function readCommits(gitRoot, fromSha, { since = null, max = 50 } = {}) {
+  const dirs = gitRoot && fromSha ? gitDirs(gitRoot) : null;
+  if (!dirs) return [];
+  const out = [];
+  const seen = new Set();
+  let sha = fromSha.toLowerCase();
+  while (sha && out.length < max && !seen.has(sha)) {
+    seen.add(sha);
+    const c = readLooseCommit(dirs.commonDir, sha);
+    if (!c || (since !== null && c.time < since)) break;
+    out.push({ sha, subject: c.subject, time: c.time });
+    sha = c.parent;
+  }
+  return out.reverse();
+}
+
+/**
+ * Build a check for whether an object (full or abbreviated sha) exists in the
+ * repo, loose or in a pack. Used to drop commits the transcript shows being
+ * made in some other repository. Returns null outside a repository.
+ * @returns {((sha: string) => boolean)|null}
+ */
+export function objectLookup(gitRoot) {
+  const dirs = gitRoot ? gitDirs(gitRoot) : null;
+  if (!dirs) return null;
+  const objects = join(dirs.commonDir, 'objects');
+  let packs = null; // pack indexes are read lazily, once
+  return (sha) => {
+    const s = String(sha).toLowerCase();
+    if (!/^[0-9a-f]{4,64}$/.test(s)) return false;
+    try {
+      if (readdirSync(join(objects, s.slice(0, 2))).some((f) => f.startsWith(s.slice(2)))) return true;
+    } catch {
+      // no loose objects with this first byte
+    }
+    packs ??= readPackIndexes(join(objects, 'pack'));
+    return packs.some((idx) => packHas(idx, s));
+  };
+}
+
+/** Pack index (v2) files as buffers; unreadable or v1 indexes are skipped. */
+function readPackIndexes(packDir) {
+  let names = [];
+  try {
+    names = readdirSync(packDir).filter((f) => f.endsWith('.idx'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    try {
+      const buf = readFileSync(join(packDir, name));
+      if (buf.readUInt32BE(0) === 0xff744f63 && buf.readUInt32BE(4) === 2) out.push(buf);
+    } catch {
+      // skip
+    }
+  }
+  return out;
+}
+
+/** Binary search a v2 pack index for an object whose name starts with `hex`. */
+function packHas(idx, hex) {
+  const width = 20; // SHA-1; SHA-256 repositories use a different index layout
+  const first = parseInt(hex.slice(0, 2), 16);
+  let lo = first === 0 ? 0 : idx.readUInt32BE(8 + (first - 1) * 4);
+  let hi = idx.readUInt32BE(8 + first * 4);
+  const names = 8 + 256 * 4;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const name = idx.toString('hex', names + mid * width, names + (mid + 1) * width);
+    if (name.startsWith(hex)) return true;
+    if (name < hex) lo = mid + 1;
+    else hi = mid;
+  }
+  return false;
+}
+
+/** Inflate and parse one loose commit object; null if missing, packed or not a commit. */
+function readLooseCommit(commonDir, sha) {
+  let raw;
+  try {
+    raw = inflateSync(readFileSync(join(commonDir, 'objects', sha.slice(0, 2), sha.slice(2))));
+  } catch {
+    return null;
+  }
+  const nul = raw.indexOf(0);
+  if (nul === -1 || !raw.subarray(0, nul).toString('latin1').startsWith('commit ')) return null;
+  const text = raw.subarray(nul + 1).toString('utf8');
+  const sep = text.indexOf('\n\n');
+  const header = sep === -1 ? text : text.slice(0, sep);
+  const message = sep === -1 ? '' : text.slice(sep + 2);
+  const committed = /^committer .* (\d+) [+-]\d{4}$/m.exec(header);
+  if (!committed) return null;
+  return {
+    parent: /^parent ([0-9a-f]{40,64})$/m.exec(header)?.[1] ?? null,
+    time: Number(committed[1]) * 1000,
+    subject: message.split('\n').find((l) => l.trim())?.trim() ?? '',
+  };
 }
 
 function resolveRef({ gitDir, commonDir }, ref) {

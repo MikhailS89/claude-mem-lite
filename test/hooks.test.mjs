@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
+import { commitSession, sampleSession, toJsonl, writeLooseCommit } from './helpers.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'cml-hooks-'));
@@ -147,6 +147,12 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   mkdirSync(join(repo, '.git', 'refs', 'heads'), { recursive: true });
   writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${sha('3')}\n`);
+  // The transcript's commits exist in this repository (the lookup only needs the
+  // object names); 2222222 is the pre-amend commit, which git keeps as a dangling object.
+  for (const c of ['1', '2', '3']) {
+    mkdirSync(join(repo, '.git', 'objects', c + c), { recursive: true });
+    writeFileSync(join(repo, '.git', 'objects', c + c, c.repeat(38)), '');
+  }
   const transcript = join(tmp, 'sess-c.jsonl');
   writeFileSync(transcript, toJsonl(commitSession({ cwd: repo })));
   const input = { session_id: 'sess-c', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' };
@@ -170,9 +176,18 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   ctx = recap();
   assert.match(ctx, /HEAD at end: 3333333 \(main\), now 9999999/);
 
+  // `git commit -q` prints nothing, so the commit is only found in .git.
+  const quiet = writeLooseCommit(join(repo, '.git'), { parent: sha('3'), subject: 'docs: quiet commit', time: Date.now() });
+  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${quiet}\n`);
+  r = runHook('session-stop.mjs', input, {}, dataDir);
+  assert.equal(r.status, 0, r.stderr);
+  ctx = recap();
+  assert.match(ctx, new RegExp(`3333333 feat: stage 1 content model\\n {2}- ${quiet.slice(0, 7)} docs: quiet commit`));
+  assert.match(ctx, new RegExp(`HEAD at end: ${quiet.slice(0, 7)} \\(main\\) · no edits after last commit`));
+
   r = runCli(['show', 'sess-c'], dataDir);
-  assert.match(r.stdout, /Commits:\n {2}1111111 feat: stage 0 skeleton\n {2}3333333 feat: stage 1 content model/);
-  assert.match(r.stdout, /HEAD at end: 3333333 \(main\)\nEdited after last commit: README\.md/);
+  assert.match(r.stdout, new RegExp(`Commits:\\n {2}1111111 feat: stage 0 skeleton\\n {2}3333333 feat: stage 1 content model\\n {2}${quiet.slice(0, 7)} docs: quiet commit`));
+  assert.match(r.stdout, new RegExp(`HEAD at end: ${quiet.slice(0, 7)} \\(main\\)\\nEdited after last commit: none`));
 });
 
 test('a missing transcript is skipped without creating anything', () => {

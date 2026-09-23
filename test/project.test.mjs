@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { findGitRoot, normalizeRemote, readHead, readRemoteUrl, resolveProject } from '../src/project.mjs';
+import { findGitRoot, normalizeRemote, objectLookup, readCommits, readHead, readRemoteUrl, resolveProject } from '../src/project.mjs';
+import { writeLooseCommit } from './helpers.mjs';
 
 const tmp = mkdtempSync(join(tmpdir(), 'cml-project-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -91,6 +92,57 @@ test('readHead reads loose refs, packed refs, detached and unborn HEADs', () => 
 
   assert.equal(readHead(join(tmp, 'not-a-repo')), null);
   assert.equal(readHead(null), null);
+});
+
+test('readCommits walks loose commits from HEAD back to a start time', () => {
+  const repo = join(tmp, 'commits-repo');
+  const gitDir = join(repo, '.git');
+  mkdirSync(gitDir, { recursive: true });
+  const t0 = Date.parse('2026-09-23T10:00:00Z');
+  const c1 = writeLooseCommit(gitDir, { subject: 'chore: before the session', time: t0 - 3600_000 });
+  const c2 = writeLooseCommit(gitDir, { parent: c1, subject: 'feat: stage 0 skeleton', time: t0 + 60_000, body: 'Longer body.' });
+  const sig = 'gpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n';
+  const c3 = writeLooseCommit(gitDir, { parent: c2, subject: 'feat: этап 1, контент-модель', time: t0 + 120_000, extraHeader: sig });
+
+  assert.deepEqual(
+    readCommits(repo, c3, { since: t0 }).map((c) => [c.sha, c.subject, c.time]),
+    [
+      [c2, 'feat: stage 0 skeleton', t0 + 60_000],
+      [c3, 'feat: этап 1, контент-модель', t0 + 120_000],
+    ],
+  );
+  assert.equal(readCommits(repo, c3).length, 3, 'no start time: the whole loose chain');
+  assert.deepEqual(readCommits(repo, c3, { max: 1 }).map((c) => c.sha), [c3]);
+
+  // A packed (or missing) object ends the walk without an error.
+  const c4 = writeLooseCommit(gitDir, { parent: 'f'.repeat(40), subject: 'after gc', time: t0 + 180_000 });
+  assert.deepEqual(readCommits(repo, c4, { since: t0 }).map((c) => c.subject), ['after gc']);
+  assert.deepEqual(readCommits(repo, 'e'.repeat(40)), []);
+  assert.deepEqual(readCommits(repo, null), []);
+  assert.deepEqual(readCommits(join(tmp, 'not-a-repo'), c3), []);
+});
+
+test('objectLookup finds loose objects and objects in a v2 pack index', () => {
+  const repo = join(tmp, 'lookup-repo');
+  const objects = join(repo, '.git', 'objects');
+  mkdirSync(join(objects, 'ab'), { recursive: true });
+  mkdirSync(join(objects, 'pack'), { recursive: true });
+  writeFileSync(join(objects, 'ab', 'cdef'.padEnd(38, '0')), '');
+
+  // Minimal v2 .idx: magic, version, fanout[256], sorted 20-byte names.
+  const names = ['0011'.padEnd(40, '2'), '7a7a'.padEnd(40, '1'), '7a7b'.padEnd(40, '0'), 'ff00'.padEnd(40, '9')].sort();
+  const fanout = Buffer.alloc(256 * 4);
+  for (let b = 0; b < 256; b++) fanout.writeUInt32BE(names.filter((n) => parseInt(n.slice(0, 2), 16) <= b).length, b * 4);
+  const idx = Buffer.concat([Buffer.from([0xff, 0x74, 0x4f, 0x63, 0, 0, 0, 2]), fanout, ...names.map((n) => Buffer.from(n, 'hex'))]);
+  writeFileSync(join(objects, 'pack', 'pack-1.idx'), idx);
+
+  const has = objectLookup(repo);
+  assert.equal(has('abcdef0'), true, 'loose');
+  for (const n of names) assert.equal(has(n.slice(0, 7)), true, `packed ${n}`);
+  assert.equal(has('7a7c000'), false);
+  assert.equal(has('abcdee0'), false);
+  assert.equal(has('not-hex'), false);
+  assert.equal(objectLookup(join(tmp, 'not-a-repo')), null);
 });
 
 test('readHead in a worktree uses its own HEAD and the shared refs', () => {

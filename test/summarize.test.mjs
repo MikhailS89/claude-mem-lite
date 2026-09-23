@@ -85,6 +85,38 @@ test('summarize records commits, amends and edits after the last commit', () => 
   assert.ok(r.details.outcome, 'outcome is still stored for search');
 });
 
+test('summarize merges commits read from .git with those seen in the transcript', () => {
+  const t = parseTranscript(toJsonl(commitSession()));
+  const at = (i) => Date.parse(t.toolUses[i].ts);
+  const readmeWrite = t.toolUses.findIndex((u) => u.name === 'Write');
+  const full3 = '3333333'.padEnd(40, 'a');
+  const quiet = 'c'.repeat(40);
+  const r = summarize(t, project, {
+    head: { ref: 'main', sha: quiet },
+    headCommits: [
+      { sha: full3, subject: 'feat: stage 1 content model', time: at(readmeWrite) - 30_000 },
+      // `git commit -q` after the README write: invisible in the transcript output
+      { sha: quiet, subject: 'docs: readme', time: at(readmeWrite) + 1_000 },
+    ],
+  });
+  assert.deepEqual(
+    r.details.commits.map((c) => [c.sha.slice(0, 7), c.subject]),
+    [
+      ['1111111', 'feat: stage 0 skeleton'],
+      ['3333333', 'feat: stage 1 content model'],
+      ['ccccccc', 'docs: readme'],
+    ],
+    'no duplicate for a commit seen both ways',
+  );
+  assert.deepEqual(r.details.git.editedAfterLastCommit, [], 'the quiet commit covers the README edit');
+});
+
+test('summarize drops transcript commits that are not in this repository', () => {
+  const t = parseTranscript(toJsonl(commitSession()));
+  const r = summarize(t, project, { commitExists: (sha) => sha.startsWith('333') });
+  assert.deepEqual(r.details.commits.map((c) => c.sha), ['3333333'], '1111111 was committed in another repo');
+});
+
 test('summarize without commits keeps outcome and makes no claim about the tree', () => {
   const r = summarize(parseTranscript(toJsonl(sampleSession())), project, { head: { ref: 'main', sha: 'a'.repeat(40) } });
   assert.deepEqual(r.details.commits, []);
