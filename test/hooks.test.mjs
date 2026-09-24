@@ -20,11 +20,22 @@ writeFileSync(join(projectDir, '.git', 'config'), '[remote "origin"]\n\turl = ht
 const transcriptPath = join(tmp, 'sess-1.jsonl');
 writeFileSync(transcriptPath, toJsonl(sampleSession({ cwd: projectDir })));
 
+/**
+ * The environment the hooks run with: the test runner's, minus the plugin's
+ * own settings and the path to a real Claude Code. A developer who has commit
+ * notes turned on must not get real model calls (and their cost) from tests.
+ */
+function cleanEnv() {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_MEM_LITE_') || k === 'CLAUDE_CODE_EXECPATH') delete env[k];
+  return env;
+}
+
 function runHook(script, input, envExtra = {}, dataDir = join(tmp, 'data')) {
   const r = spawnSync(process.execPath, ['--no-warnings', join(root, 'scripts', script)], {
     input: input === null ? '' : typeof input === 'string' ? input : JSON.stringify(input),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_MEM_LITE_DIR: dataDir, CLAUDE_MEM_LITE_DEBUG: '1', ...envExtra },
+    env: { ...cleanEnv(), CLAUDE_MEM_LITE_DIR: dataDir, CLAUDE_MEM_LITE_DEBUG: '1', ...envExtra },
     timeout: 20_000,
   });
   return { ...r, dataDir };
@@ -33,7 +44,7 @@ function runHook(script, input, envExtra = {}, dataDir = join(tmp, 'data')) {
 function runCli(args, dataDir = join(tmp, 'data')) {
   return spawnSync(process.execPath, ['--no-warnings', join(root, 'scripts', 'search.mjs'), ...args], {
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_MEM_LITE_DIR: dataDir },
+    env: { ...cleanEnv(), CLAUDE_MEM_LITE_DIR: dataDir },
     timeout: 20_000,
   });
 }
