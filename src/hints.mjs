@@ -1,5 +1,6 @@
 // A file's history, shown to Claude the first time it reads or edits that
-// file in a session (PostToolUse on Read / Edit / Write / NotebookEdit).
+// file in a session (PostToolUse on Read / Edit / Write / NotebookEdit, and on
+// Bash commands that read files with `cat` or `sed`).
 //
 // Without it, Claude sees a file's current content and nothing about how it
 // got there: that the last approach was replaced, that the file was reworked,
@@ -13,6 +14,7 @@ import { MemoryDb } from './db.mjs';
 import { bmpSafe, isSensitivePath, truncate } from './privacy.mjs';
 import { resolveProject } from './project.mjs';
 import { fmtTime, statedWhy } from './recall.mjs';
+import { filesReadByCommand } from './shell.mjs';
 import { displayPath, isProjectPath } from './summarize.mjs';
 
 const TOOLS = { Read: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Write: 'file_path', NotebookEdit: 'notebook_path' };
@@ -24,29 +26,52 @@ const TOOLS = { Read: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Wr
  */
 export function fileHint(input, { db = null } = {}) {
   if (!enabled || !fileHints || input.agent_id) return null;
-  const field = TOOLS[input.tool_name];
-  const filePath = field ? input.tool_input?.[field] : null;
-  if (typeof filePath !== 'string' || !filePath || isSensitivePath(filePath)) return null;
   const sessionId = input.session_id;
   if (!sessionId) return null;
+  const cwd = input.cwd || process.cwd();
+  const files = touchedFiles(input, cwd).filter((f) => !isSensitivePath(f));
+  if (!files.length) return null;
 
-  const project = resolveProject(input.cwd || process.cwd());
+  const project = resolveProject(cwd);
   if (isDisabledForProject(project.root)) return null;
-  const path = displayPath(filePath, project.root);
-  if (!isProjectPath(path)) return null;
+  const paths = [...new Set(files.map((f) => displayPath(f, project.root)).filter(isProjectPath))].slice(0, MAX_FILES_PER_CALL);
+  if (!paths.length) return null;
   if (db === null && !existsSync(dbPath)) return null;
 
   const own = db === null;
   const store = db ?? new MemoryDb(undefined, { busyTimeoutMs: 200 });
   try {
-    // Once per file per session, whether or not there is history to show.
-    if (!store.claimFileHint(sessionId, path)) return null;
-    const history = store.fileHistory(path, { projectId: project.id, excludeSessionId: sessionId });
-    if (!history.rows.length) return null;
-    return bmpSafe(formatHint(path, history));
+    const hints = [];
+    for (const path of paths) {
+      // Once per file per session, whether or not there is history to show.
+      if (!store.claimFileHint(sessionId, path)) continue;
+      const history = store.fileHistory(path, { projectId: project.id, excludeSessionId: sessionId });
+      if (worthShowing(history)) hints.push(formatHint(path, history));
+    }
+    return hints.length ? bmpSafe(hints.join('\n\n')) : null;
   } finally {
     if (own) store.close();
   }
+}
+
+/**
+ * Edits that never reached a commit (or whose commits could not be found)
+ * say only "this file was touched" - not worth Claude's attention unless the
+ * work was also undone or revisited.
+ */
+function worthShowing({ rows, rework }) {
+  return rows.some((g) => g.commit_sha) || rework.length > 0;
+}
+
+/** A shell command may read several files; at most this many hints per call. */
+const MAX_FILES_PER_CALL = 3;
+
+/** Absolute paths a tool call read or edited: the file tools' path, or what `cat` / `sed` read. */
+function touchedFiles(input, cwd) {
+  if (input.tool_name === 'Bash') return filesReadByCommand(input.tool_input?.command ?? '', cwd);
+  const field = TOOLS[input.tool_name];
+  const p = field ? input.tool_input?.[field] : null;
+  return typeof p === 'string' && p ? [p] : [];
 }
 
 /** A few lines: the latest changes (commit, why), then anything that did not settle. */

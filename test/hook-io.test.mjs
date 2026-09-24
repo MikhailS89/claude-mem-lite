@@ -43,6 +43,11 @@ test('the file-history hook is synchronous and covers reads and edits', () => {
   assert.deepEqual(entry.matcher.split('|').sort(), ['Edit', 'MultiEdit', 'NotebookEdit', 'Read', 'Write']);
   assert.equal(entry.hooks[0].async, undefined, 'async hooks cannot add context');
   assert.ok(entry.hooks[0].timeout <= 5);
+
+  // Bash only for commands that read files, so ordinary commands never pay for a Node start.
+  const shell = hooks.hooks.PostToolUse.find((e) => e.matcher === 'Bash');
+  assert.deepEqual(shell.hooks.map((h) => h.if).sort(), ['Bash(cat *)', 'Bash(sed *)']);
+  assert.ok(shell.hooks.every((h) => h.async === undefined && h.timeout <= 5));
 });
 
 test('SessionStart also fires after /compact', () => {

@@ -26,6 +26,25 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(cat *)",
+            "command": "node",
+            "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/scripts/file-hint.mjs"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(sed *)",
+            "command": "node",
+            "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/scripts/file-hint.mjs"],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [

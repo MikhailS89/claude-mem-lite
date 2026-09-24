@@ -148,8 +148,9 @@ Commits without any conversation in their window are not sent at all.
 `search.mjs summarize` writes notes for past commits on demand.
 
 **File history, when Claude opens a file.** The first time Claude reads or
-edits a file in a session (`Read`, `Edit`, `Write`, `NotebookEdit`), the
-tool result carries that file's history from earlier sessions, if it has any:
+edits a file in a session (`Read`, `Edit`, `Write`, `NotebookEdit`, or a shell
+`cat` / `sed` of that file), the tool result carries that file's history from
+earlier sessions, if it has any:
 
 ```
 claude-mem-lite: src/db.mjs in earlier sessions (4 changes):
@@ -161,12 +162,18 @@ claude-mem-lite: src/db.mjs in earlier sessions (4 changes):
 
 So before changing a file Claude sees that the last approach was replaced, or
 why the current one was chosen, without running `git log` or searching.
-Nothing is shown for files without history, and each file is shown once per
-session. The hook must be synchronous for its output to reach Claude, so every
-`Read`/`Edit`/`Write` call waits for one Node start (~0.2 s here); in real
-sessions that added up to a few seconds to a minute over many hours. Turn it
-off with `CLAUDE_MEM_LITE_FILE_HINTS=false`. Files read through the shell
-(`cat`, `sed`) do not trigger it.
+Nothing is shown for files without history (edits that never reached a
+commit do not count, unless they were undone or revisited), and each file is
+shown once per session.
+
+The hook must be synchronous for its output to reach Claude, so each call it
+runs on waits for one Node start (~0.2 s here). For shell commands it runs
+only on `cat` and `sed` (Claude Code's `if` filter), not on every command:
+measured on real sessions, 20-70 such commands plus a handful of `Read` /
+`Edit` calls, i.e. seconds over many hours. `head` / `tail` are left out on
+purpose: they are mostly pipeline filters (`npm test | tail -5`), and a filter
+cannot tell those from reading a file. Turn it off with
+`CLAUDE_MEM_LITE_FILE_HINTS=false`.
 
 **`/claude-mem-lite:mem-search <words>`** — the skill Claude uses to look
 further back: `touched <file>` (when was it last changed, in which commit, and
@@ -258,7 +265,7 @@ recap never contains any.
 
 ```
 Claude Code ──SessionStart──▶ scripts/session-start.mjs ──▶ reads SQLite, prints recap as additionalContext
-            ──PostToolUse──▶ scripts/file-hint.mjs     ──▶ (Read/Edit/Write) a file's history, once per file
+            ──PostToolUse──▶ scripts/file-hint.mjs     ──▶ (Read/Edit/Write, cat/sed) a file's history, once per file
             ──Stop─────────▶ scripts/session-stop.mjs  ──▶ parses the session transcript (.jsonl),
             ──SessionEnd───▶ scripts/session-end.mjs   ──▶ compresses it, upserts one row per session
 ```

@@ -9,6 +9,7 @@
 // committed.
 
 import { posix, resolve } from 'node:path';
+import { nativePath, walkCommand } from './shell.mjs';
 
 /**
  * @typedef {object} Segment
@@ -221,38 +222,19 @@ const DISCARD_CMD = /^git (?:restore|checkout --|reset --hard)(?:\s|$)/i;
  */
 export function removalsFromCommand(command, cwd, toDisplay) {
   const out = [];
-  let dir = cwd;
-  for (const part of String(command).split(/\s*(?:&&|\|\||;|\n)\s*/)) {
-    const words = shellWords(part.trim());
-    if (!words.length) continue;
-    if (words[0] === 'cd' && words[1]) {
-      dir = resolve(dir, nativePath(words[1]));
-      continue;
-    }
+  walkCommand(command, cwd, (words, dir) => {
     const joined = words.join(' ');
     const reason = DISCARD_CMD.test(joined) ? 'discarded' : REMOVE_CMD.test(joined) ? 'deleted' : null;
-    if (!reason) continue;
+    if (!reason) return;
     // `git restore --staged` only unstages; the edits survive.
-    if (reason === 'discarded' && words.includes('--staged') && !words.includes('--worktree')) continue;
+    if (reason === 'discarded' && words.includes('--staged') && !words.includes('--worktree')) return;
     if (/^git$/i.test(words[0]) && /^reset$/i.test(words[1] ?? '')) {
       out.push({ targets: ['*'], reason });
-      continue;
+      return;
     }
     const skip = /^git$/i.test(words[0]) ? 2 : 1;
     const targets = words.slice(skip).filter((w) => w !== '--' && !w.startsWith('-'));
     if (targets.length) out.push({ targets: targets.map((t) => toDisplay(resolve(dir, nativePath(t)))), reason });
-  }
-  return out;
-}
-
-/** Git Bash writes Windows paths as /c/Users/...; Node needs C:/Users/... */
-function nativePath(p) {
-  return process.platform === 'win32' ? p.replace(/^\/([a-z])(?=\/|$)/i, '$1:') : p;
-}
-
-/** Split a command into words, honouring simple single and double quotes. */
-function shellWords(s) {
-  const out = [];
-  for (const m of s.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3]);
+  });
   return out;
 }

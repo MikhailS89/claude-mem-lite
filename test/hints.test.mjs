@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -65,6 +65,30 @@ test('no hint for files without history, outside the project, secrets, other too
   assert.equal(fileHint(input('src/names.cjs', { tool_name: 'Bash', tool_input: { command: 'cat src/names.cjs' } }), { db }), null);
   assert.equal(fileHint(input('src/names.cjs', { session_id: 'old-2' }), { db }).includes('old-2'), false, "a session's own work is never shown back to it");
   assert.equal(fileHint(input('src/names.cjs', { session_id: 's9', agent_id: 'a1' }), { db }), null, 'not inside subagents');
+});
+
+test('a shell command that reads files with cat or sed gets a hint per file with history', () => {
+  const db = seeded();
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  writeFileSync(join(repo, 'src', 'names.cjs'), 'x');
+  writeFileSync(join(repo, 'README.md'), 'x');
+  writeFileSync(join(repo, 'src', 'fresh.ts'), 'x');
+  const bash = (command, session = 'shell') => fileHint({ session_id: session, cwd: repo, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command } }, { db });
+  const hint = bash(`cd "${repo}" && sed -n '1,20p' src/names.cjs && cat README.md src/fresh.ts | head -3`);
+  assert.match(hint, /^claude-mem-lite: src\/names\.cjs in earlier sessions \(3 changes\):/);
+  assert.match(hint, /\n\nclaude-mem-lite: README\.md in earlier sessions \(1 change\):\n- 2026-09-20 aaaaaaa feat: names dictionary$/);
+  assert.doesNotMatch(hint, /fresh/, 'no history, no hint');
+  assert.equal(bash('cat src/names.cjs'), null, 'already shown in this session');
+  assert.equal(bash('npm test', 'other'), null);
+});
+
+test('edits that never reached a commit are not worth a hint, unless the work did not settle', () => {
+  const db = seeded();
+  const add = (id, rework = []) =>
+    db.upsertSession({ id, projectId: project.id, title: id, summary: '', details: { format: 3, segments: [seg(0, null, null, '2026-09-19T10:00:00Z', ['docs/notes.md', 'src/tried.ts'])], rework }, status: 'ended' }, []);
+  add('talk', [{ path: 'src/tried.ts', reason: 'deleted', segments: [0], edits: 2 }]);
+  assert.equal(fileHint(input('docs/notes.md'), { db }), null);
+  assert.match(fileHint(input('src/tried.ts'), { db }), /no commit recorded\n- created, then deleted in session talk/);
 });
 
 test('a hint names the path to dig further when there is more history than shown', () => {

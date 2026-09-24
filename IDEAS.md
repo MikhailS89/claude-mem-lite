@@ -131,16 +131,18 @@ one of the five recap slots just like a session that edited 20 files. Fix:
 score sessions (tool calls, files edited, duration) and either skip trivial
 ones in the recap or merge consecutive ones from the same day.
 
-### 1.9 File hints only see Read / Edit / Write
+### 1.9 File hints and shell reads
 
-0.5.0 shows a file's history when Claude first reads or edits it with the
-file tools. Measured on real sessions, Claude reads most files through Bash
-(`cat`, `sed -n`): 11 `Read` calls out of 487 tool calls in one ApexFit
-session. Edits do go through `Edit`/`Write`, so the hint still arrives before
-the second change to a file, but reads through the shell never trigger it.
-Possible extension: a `PostToolUse` hook on `Bash` that picks file paths out
-of `cat`/`sed`/`head` commands - at the price of one more Node start per
-shell command, which is the most frequent tool call of all.
+Measured on real sessions, Claude reads most files through Bash (`cat`,
+`sed -n`): 11 `Read` calls out of 487 tool calls in one ApexFit session. Since
+0.6.0 the hint hook also runs on Bash, but only for `cat` and `sed`, through
+Claude Code's per-handler `if` filter (`"Bash(cat *)"`), so other commands
+never start Node (verified: three commands, one hook run).
+
+Left out: `head` / `tail`. In the same sessions they appeared 50-120 times,
+almost always as pipeline filters (`npm test | tail -5`); `if` matches every
+subcommand, so it cannot tell those from `head -40 file.ts`, and including
+them would cost ~20-30 s of Node starts per session for few hints.
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-lite",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local, offline, auditable session memory for Claude Code. Zero dependencies.",
   "type": "module",
   "private": true,
