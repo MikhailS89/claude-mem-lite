@@ -30,20 +30,30 @@ export function captureSession(input, { final = false, db = null } = {}) {
   const cwd = input.cwd || process.cwd();
   if (isDisabledForProject(resolveProject(cwd).root)) return { skipped: 'disabled for project' };
 
-  const record = buildSessionRecord({ sessionId, transcriptPath, cwd, final, endReason: input.reason });
+  // The row is written before `git status` runs: in `claude -p` Claude Code
+  // stops this background hook as soon as it exits, and the session record
+  // matters more than the worktree line, which follows in a second write.
+  const base = { sessionId, transcriptPath, cwd, final, endReason: input.reason };
+  const record = buildSessionRecord({ ...base, worktree: null });
   // Nothing worth remembering yet (e.g. session opened and closed immediately).
   if (!record) return { skipped: 'empty transcript' };
 
   const own = db === null;
   const store = db ?? new MemoryDb();
+  let stored = record;
   try {
     store.upsertProject(record.project);
     store.upsertSession(record.row, record.files);
+    logDebug('captured session', { sessionId, projectId: record.project.id, final, stats: record.stats });
+    const worktree = gitStatus ? readWorktree(record.gitRoot) : null;
+    if (worktree) {
+      stored = buildSessionRecord({ ...base, worktree, transcript: record.transcript });
+      store.upsertSession(stored.row, stored.files);
+    }
   } finally {
     if (own) store.close();
   }
-  logDebug('captured session', { sessionId, projectId: record.project.id, final, stats: record.stats });
-  return { sessionId, projectId: record.project.id, summary: record.row.summary };
+  return { sessionId, projectId: record.project.id, summary: stored.row.summary };
 }
 
 /**
@@ -55,11 +65,15 @@ export function captureSession(input, { final = false, db = null } = {}) {
  * current HEAD and `git status` describe its end state. For an old transcript
  * (re-indexing, replay) they describe today instead, so HEAD at end is taken
  * from the session's own last commit and the worktree is left unknown.
- * @returns {{project: object, row: object, files: object[], stats: object}|null} null for an empty transcript
+ *
+ * `worktree`: 'auto' runs `git status` for a live session; null skips it; an
+ * object is used as is. `transcript` reuses an already parsed transcript.
+ * @returns {{project: object, row: object, files: object[], stats: object, gitRoot: string|null, transcript: object}|null}
+ *          null for an empty transcript
  */
-export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = false, endReason = null, live = true }) {
+export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = false, endReason = null, live = true, worktree: wt = 'auto', transcript: parsed = null }) {
   const project = resolveProject(cwd);
-  const transcript = parseTranscriptFile(transcriptPath);
+  const transcript = parsed ?? parseTranscriptFile(transcriptPath);
   if (transcript.prompts.length === 0 && transcript.toolUses.length === 0) return null;
 
   // Stop runs after every turn, so the last live capture holds HEAD at session end.
@@ -70,7 +84,7 @@ export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = fal
   const max = live ? limits.commits : 500;
   const headCommits = currentHead?.sha && Number.isFinite(since) ? readCommits(gitRoot, currentHead.sha, { since, max }) : [];
   const commitExists = objectLookup(gitRoot);
-  const worktree = live && gitStatus ? readWorktree(gitRoot) : null;
+  const worktree = wt === 'auto' ? (live && gitStatus ? readWorktree(gitRoot) : null) : live ? wt : null;
   const { title, summary, details, files, stats } = summarize(transcript, project, {
     head: live ? currentHead : null,
     headCommits,
@@ -97,5 +111,5 @@ export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = fal
     prompts: stats.prompts,
     toolCalls: stats.toolCalls,
   };
-  return { project, row, files, stats };
+  return { project, row, files, stats, gitRoot, transcript };
 }

@@ -68,12 +68,13 @@ currently no way to say "forget anything older than a year" short of
 
 ### 1.5 `claude -p`: background hooks are cut short
 
-Measured with 0.3.0: in print mode Claude Code stops the async `Stop` hook as
-soon as it prints its answer. 0.2.1 wrote the row ~65 ms after the hook
-started and usually won the race; 0.3.0 runs `git status` first (~60 ms more)
-and lost it, so the last turn of a `-p` session may not be recorded. Possible
-fix: write the row first and add the worktree state in a second, cheap update,
-so the part that matters most lands earliest.
+Measured with 0.2.1 and 0.3.0: in print mode Claude Code stops the async
+`Stop` hook almost as soon as it prints its answer, so whether the last turn
+of a `-p` session is recorded is luck, not speed (0.2.1 won the race once
+at 65 ms and lost it in the next run). Since 0.3.0 the row is written first,
+~30 ms after the hook starts, and `git status` only afterwards, which helps
+but cannot guarantee it. A real fix would be a synchronous hook, which would
+add latency to every interactive turn; not worth it for print mode.
 
 Sessions captured in print mode also stay `status = 'active'` forever.
 `isLikelyOpen()` in [src/recall.mjs](src/recall.mjs) papers over this by only
