@@ -8,7 +8,9 @@
 //   segments      the units of work inside a session: one per commit, plus the
 //                 uncommitted tail (see segments.mjs)
 //   segment_files files edited per segment, for "when did we last touch X?"
-//   segments_fts  FTS5 index over a segment's commit subject, prompts and files
+//   segments_fts  FTS5 index over a segment's commit subject, prompts, files and note
+//   commit_notes  "what" and "why" of a commit, written by a small model (llm.mjs);
+//                 keyed by sha because segments are rewritten after every turn
 //
 // Schema changes are additive (CREATE ... IF NOT EXISTS), so an old database
 // simply gains the new tables; rows written before them are re-indexed from
@@ -82,6 +84,20 @@ CREATE TABLE IF NOT EXISTS segment_files (
   FOREIGN KEY (session_id, seq) REFERENCES segments(session_id, seq) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS segment_files_path ON segment_files(path);
+CREATE TABLE IF NOT EXISTS commit_notes (
+  commit_sha TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  session_id TEXT,
+  status     TEXT NOT NULL,
+  type       TEXT,
+  what       TEXT,
+  why        TEXT,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  error      TEXT,
+  model      TEXT,
+  cost_usd   REAL,
+  created_at TEXT NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
   session_id UNINDEXED,
   seq UNINDEXED,
@@ -214,6 +230,7 @@ export class MemoryDb {
     );
     const insFile = db.prepare('INSERT OR REPLACE INTO segment_files(session_id, seq, path, kind, ops) VALUES (?, ?, ?, ?, ?)');
     const insFts = db.prepare('INSERT INTO segments_fts(session_id, seq, subject, body) VALUES (?, ?, ?, ?)');
+    const note = db.prepare("SELECT what, why FROM commit_notes WHERE commit_sha = ? AND status = 'ok'");
     for (const s of segments) {
       insSeg.run(
         sessionId,
@@ -227,7 +244,53 @@ export class MemoryDb {
         JSON.stringify(s.prompts ?? []),
       );
       for (const f of s.files ?? []) insFile.run(sessionId, s.seq, f.path, f.kind, f.ops ?? 1);
-      insFts.run(sessionId, s.seq, s.commit?.subject ?? '', [...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path)].join('\n'));
+      const n = s.commit ? note.get(s.commit.sha) : null;
+      const noteText = n ? [n.what, n.why] : [];
+      insFts.run(sessionId, s.seq, s.commit?.subject ?? '', [...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path), ...noteText].join('\n'));
+    }
+  }
+
+  // --- commit notes -----------------------------------------------------------
+
+  /** Notes by sha (status ok/skipped/failed), for the given shas. */
+  notesFor(shas) {
+    const q = this.db.prepare('SELECT * FROM commit_notes WHERE commit_sha = ?');
+    const out = new Map();
+    for (const sha of shas) {
+      const n = q.get(sha);
+      if (n) out.set(sha, n);
+    }
+    return out;
+  }
+
+  /**
+   * Record the outcome of summarising one commit: 'ok' with a note, 'skipped'
+   * (nothing to summarise), or 'failed' (counted, retried a limited number of times).
+   */
+  putNote({ sha, projectId, sessionId, status, type = null, what = null, why = null, error = null, model = null, costUsd = null }) {
+    this.db
+      .prepare(
+        `INSERT INTO commit_notes(commit_sha, project_id, session_id, status, type, what, why, attempts, error, model, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+         ON CONFLICT(commit_sha) DO UPDATE SET status = excluded.status, type = excluded.type, what = excluded.what,
+           why = excluded.why, attempts = commit_notes.attempts + 1, error = excluded.error, model = excluded.model,
+           cost_usd = excluded.cost_usd, created_at = excluded.created_at`,
+      )
+      .run(sha, projectId, sessionId, status, type, what, why, error, model, costUsd, new Date().toISOString());
+  }
+
+  /** Rebuild one session's segment search rows, e.g. after notes arrived. */
+  refreshSegmentIndex(sessionId) {
+    const s = this.getSession(sessionId);
+    if (!s || s.id !== sessionId) return;
+    const segments = parsedDetails(s.details).segments ?? [];
+    this.db.exec('BEGIN');
+    try {
+      this.#writeSegments(sessionId, s.project_id, segments);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
   }
 
@@ -268,9 +331,12 @@ export class MemoryDb {
       return this.#withFiles(
         this.db
           .prepare(
-            `SELECT g.*, s.branch, s.title, s.status, s.updated_at, bm25(segments_fts, 0, 0, 10.0, 1.0) AS rank
+            `SELECT g.*, s.branch, s.title, s.status, s.updated_at, n.type AS note_type, n.what AS note_what, n.why AS note_why,
+               bm25(segments_fts, 0, 0, 10.0, 1.0) AS rank
              FROM segments_fts JOIN segments g ON g.session_id = segments_fts.session_id AND g.seq = segments_fts.seq
-             JOIN sessions s ON s.id = g.session_id ${where} ORDER BY rank LIMIT ?`,
+             JOIN sessions s ON s.id = g.session_id
+             LEFT JOIN commit_notes n ON n.commit_sha = g.commit_sha AND n.status = 'ok'
+             ${where} ORDER BY rank LIMIT ?`,
           )
           .all(match, ...params, limit),
       );
@@ -424,7 +490,9 @@ export class MemoryDb {
 }
 
 /** Segment rows joined with the session fields every listing shows. */
-const SEGMENT_SELECT = `SELECT g.*, s.branch, s.title, s.status, s.updated_at FROM segments g JOIN sessions s ON s.id = g.session_id`;
+const SEGMENT_SELECT = `SELECT g.*, s.branch, s.title, s.status, s.updated_at, n.type AS note_type, n.what AS note_what, n.why AS note_why
+  FROM segments g JOIN sessions s ON s.id = g.session_id
+  LEFT JOIN commit_notes n ON n.commit_sha = g.commit_sha AND n.status = 'ok'`;
 
 function segmentFilters({ projectId = null, since = null, excludeSessionId = null }, extra = []) {
   const where = [...extra];

@@ -223,6 +223,57 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   assert.match(r.stdout, /Part of session sess-c/);
 });
 
+test('listings call a session\'s tail "uncommitted", and a commitless session "no commits recorded"', () => {
+  const dataDir = join(tmp, 'labels');
+  const repo = join(tmp, 'labels-repo');
+  mkdirSync(repo, { recursive: true });
+  const transcript = join(tmp, 'sess-l.jsonl');
+  writeFileSync(transcript, toJsonl(commitSession({ cwd: repo, sessionId: 'sess-l' })));
+  runHook('session-stop.mjs', { session_id: 'sess-l', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' }, { CLAUDE_MEM_LITE_GIT_STATUS: 'false' }, dataDir);
+  const r = runCli(['--cwd', repo, 'recent'], dataDir);
+  assert.match(r.stdout, /uncommitted · 1 file: README\.md/);
+  assert.doesNotMatch(r.stdout, /no commits recorded/);
+});
+
+test('with LLM summaries on, Stop starts a background worker that writes commit notes', async () => {
+  const dataDir = join(tmp, 'notes');
+  const repo = join(tmp, 'notes-repo');
+  mkdirSync(repo, { recursive: true });
+  const transcript = join(tmp, 'sess-n.jsonl');
+  writeFileSync(transcript, toJsonl(commitSession({ cwd: repo, sessionId: 'sess-n' })));
+  const env = {
+    CLAUDE_MEM_LITE_GIT_STATUS: 'false',
+    CLAUDE_MEM_LITE_LLM_SUMMARY: 'true',
+    CLAUDE_MEM_LITE_CLAUDE_BIN: join(root, 'test', 'fixtures', 'fake-claude.mjs'),
+  };
+  const started = Date.now();
+  const r = runHook('session-stop.mjs', { session_id: 'sess-n', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' }, env, dataDir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - started < 5000, 'the hook does not wait for the model');
+
+  // The worker is detached; wait for its note.
+  let out = '';
+  for (let i = 0; i < 50 && !/why: because of feat: stage 0 skeleton/.test(out); i++) {
+    await new Promise((res) => setTimeout(res, 200));
+    out = runCli(['--cwd', repo, 'touched', 'src/a.ts'], dataDir).stdout;
+  }
+  assert.match(out, /why: because of feat: stage 0 skeleton/);
+  assert.match(readFileSync(join(dataDir, 'hooks.log'), 'utf8'), /notes: worker finished.*"done":1/);
+
+  const recap = JSON.parse(runHook('session-start.mjs', { session_id: 'next', cwd: repo, hook_event_name: 'SessionStart' }, {}, dataDir).stdout).hookSpecificOutput.additionalContext;
+  assert.match(recap, /- 1111111 feat: stage 0 skeleton[^\n]*\n {4}why: because of feat: stage 0 skeleton\n/);
+});
+
+test('with LLM summaries off (the default), no worker and no notes', () => {
+  const dataDir = join(tmp, 'no-notes');
+  const repo = join(tmp, 'no-notes-repo');
+  mkdirSync(repo, { recursive: true });
+  const transcript = join(tmp, 'sess-o.jsonl');
+  writeFileSync(transcript, toJsonl(commitSession({ cwd: repo, sessionId: 'sess-o' })));
+  runHook('session-stop.mjs', { session_id: 'sess-o', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' }, { CLAUDE_MEM_LITE_GIT_STATUS: 'false', CLAUDE_MEM_LITE_CLAUDE_BIN: join(root, 'test', 'fixtures', 'fake-claude.mjs') }, dataDir);
+  assert.doesNotMatch(readFileSync(join(dataDir, 'hooks.log'), 'utf8'), /notes:/);
+});
+
 test('a real repository: git status after the turn says clean or what is uncommitted', { skip: spawnSync('git', ['--version']).status !== 0 && 'git not installed' }, () => {
   const dataDir = join(tmp, 'real-git');
   const repo = join(tmp, 'real-repo');

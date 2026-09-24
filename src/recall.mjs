@@ -59,11 +59,12 @@ const SEGMENTS_OLDER = 2;
  * commit, oldest first), the docs that changed, and what did not settle.
  * Rows written before segments existed are rendered by formatLegacyBrief.
  * @param {object} s session row
- * @param {{currentHead?: {ref:string|null, sha:string|null}|null, newest?: boolean}} [opts]
+ * @param {{currentHead?: {ref:string|null, sha:string|null}|null, newest?: boolean, notes?: Map<string, {why:string}>}} [opts]
  *        currentHead: HEAD of the repository now, to tell whether it moved since;
- *        newest: the first session of the recap, shown in more detail
+ *        newest: the first session of the recap, shown in more detail;
+ *        notes: commit notes by sha, whose "why" is shown under the newest session's commits
  */
-export function formatSessionBrief(s, { currentHead = null, newest = true } = {}) {
+export function formatSessionBrief(s, { currentHead = null, newest = true, notes = null } = {}) {
   const d = safeJson(s.details);
   if (!Array.isArray(d.segments)) return formatLegacyBrief(s, d, { currentHead });
   const lines = [sessionHeader(s)];
@@ -80,7 +81,13 @@ export function formatSessionBrief(s, { currentHead = null, newest = true } = {}
     const earlier = segs.length - shown.length;
     lines.push(`- work${earlier ? ` (last ${shown.length} of ${segs.length} segments)` : ''}, oldest first:`);
   }
-  for (const g of shown) lines.push(`${commits ? '  - ' : '- '}${segmentLine(g, { listFiles: !g.commit })}`);
+  for (const g of shown) {
+    lines.push(`${commits ? '  - ' : '- '}${segmentLine(g, { listFiles: !g.commit })}`);
+    // The reason behind a commit is what git does not keep; only the newest
+    // session gets it, to keep the recap small.
+    const why = newest && g.commit ? statedWhy(notes?.get(g.commit.sha)) : null;
+    if (why) lines.push(`    why: ${truncate(why, 220)}`);
+  }
 
   const docs = (d.filesEdited ?? []).filter(isDocPath);
   if (docs.length) lines.push(`- docs changed: ${preview(docs, 6)}`);
@@ -94,6 +101,13 @@ export function formatSessionBrief(s, { currentHead = null, newest = true } = {}
   if (d.outcome && !commits) lines.push(`- outcome: ${briefText(d.outcome, newest ? 300 : 160)}`);
   lines.push(`- session: ${s.id.slice(0, 8)}${isLikelyOpen(s) ? ' (possibly still open)' : ''}`);
   return lines.join('\n');
+}
+
+/** A note's "why", unless the model found no stated reason. */
+export function statedWhy(note) {
+  const why = note?.why?.trim();
+  if (!why || /^(not stated|не указан[оа]?|причина не указана)\.?$/i.test(why)) return null;
+  return why;
 }
 
 function sessionHeader(s, suffix = '') {
@@ -239,9 +253,10 @@ export function buildRecall(input, { db = null } = {}) {
     // Only the newest session can say where things were left, so only it is
     // compared with the current HEAD.
     const currentHead = readHead(findGitRoot(cwd));
+    const notes = store.notesFor(commitShas(sessions[0]));
     let out = header;
     for (const [i, s] of sessions.entries()) {
-      const brief = formatSessionBrief(s, { currentHead: i === 0 ? currentHead : null, newest: i === 0 }) + '\n\n';
+      const brief = formatSessionBrief(s, { currentHead: i === 0 ? currentHead : null, newest: i === 0, notes }) + '\n\n';
       if (out.length + brief.length > recallMaxChars) {
         // Always show at least one session, even if it has to be cut.
         if (out === header) out += safeSlice(brief, recallMaxChars - out.length - 2) + '…\n';
@@ -253,6 +268,10 @@ export function buildRecall(input, { db = null } = {}) {
   } finally {
     if (own) store.close();
   }
+}
+
+function commitShas(s) {
+  return (safeJson(s.details).segments ?? []).filter((g) => g.commit).map((g) => g.commit.sha);
 }
 
 /** "a, b, c (+4 more)". `total` when `items` is itself already a capped list. */

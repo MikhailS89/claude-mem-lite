@@ -12,6 +12,7 @@
 //   search.mjs forget-project <id>      delete a project and all its sessions
 //   search.mjs where                    database location and current project id
 //   search.mjs reindex                  rebuild rows written by older versions from their transcripts
+//   search.mjs summarize [session-id]   write "what / why" notes for commits that have none (uses claude -p)
 //   search.mjs replay <file.jsonl>      dry run: what the hooks would store and recall for a
 //                                       transcript, without touching the database
 //
@@ -25,8 +26,9 @@ import { dbPath, enabled } from '../src/config.mjs';
 import { MemoryDb } from '../src/db.mjs';
 import { bmpSafe } from '../src/privacy.mjs';
 import { findGitRoot, readHead, resolveProject } from '../src/project.mjs';
-import { fmtTime, formatSessionBrief, isLikelyOpen, parseSince, reworkLines, segmentLine } from '../src/recall.mjs';
-import { reindexSome } from '../src/reindex.mjs';
+import { pendingCommits, summarizePending } from '../src/notes.mjs';
+import { fmtTime, formatSessionBrief, isLikelyOpen, parseSince, reworkLines, segmentLine, statedWhy } from '../src/recall.mjs';
+import { findTranscript, reindexSome } from '../src/reindex.mjs';
 import { parseTranscriptFile } from '../src/transcript.mjs';
 
 function parseArgs(argv) {
@@ -59,6 +61,7 @@ function usage() {
   search.mjs forget-project <id>      delete a project and all its sessions
   search.mjs where                    database location and current project id
   search.mjs reindex                  rebuild rows written by older versions from their transcripts
+  search.mjs summarize [session-id]   write "what / why" notes for commits without one (claude -p, ~$0.01-0.015 each)
   search.mjs replay <file.jsonl>      dry run of capture + recap on a transcript (no db writes)
 
 A segment is the work up to one commit, or the uncommitted tail of a session.
@@ -69,12 +72,14 @@ Database: ${dbPath}`;
 
 // --- segment listings ----------------------------------------------------------
 
-/** Two lines per segment: when + what, then size and where it lives. */
+/** Two lines per segment: when + what, then where it lives; the commit note's "why" if there is one. */
 function segmentEntry(g, extra = []) {
   const when = fmtTime(g.ended_at ?? g.started_at);
-  const seg = { commit: g.commit_sha ? { sha: g.commit_sha, subject: g.commit_subject } : null, files: g.files, activeMin: g.active_min };
+  const seg = { seq: g.seq, commit: g.commit_sha ? { sha: g.commit_sha, subject: g.commit_subject } : null, files: g.files, activeMin: g.active_min };
   const lines = [`${when}  ${segmentLine(seg, { listFiles: !seg.commit })}`];
   lines.push(`    session ${g.session_id.slice(0, 8)}${g.branch ? ` (${g.branch})` : ''}${g.title ? ` · ${g.title}` : ''}`);
+  const why = statedWhy({ why: g.note_why });
+  if (why) lines.push(`    why: ${why}`);
   return [...lines, ...extra.map((l) => `    ${l}`)].join('\n');
 }
 
@@ -164,6 +169,9 @@ function show(db, id, json) {
 function segmentBlock(g) {
   const head = g.commit_sha ? `${g.commit_sha.slice(0, 7)} ${g.commit_subject}` : g.seq > 0 ? 'uncommitted' : 'no commits recorded';
   const out = [`${head}`, `  ${fmtTime(g.started_at)} → ${fmtTime(g.ended_at)}${g.active_min ? `, ${g.active_min} min active` : ''}`];
+  if (g.note_what) out.push(`  ${g.note_type ?? 'note'}: ${g.note_what}`);
+  const why = statedWhy({ why: g.note_why });
+  if (why) out.push(`  why: ${why}`);
   for (const p of g.prompts ?? []) out.push(`  asked: ${p}`);
   if (g.files?.length) out.push(`  files: ${g.files.map((f) => `${f.path}${f.ops > 1 ? ` ×${f.ops}` : ''}`).join(', ')}`);
   return out.join('\n');
@@ -207,6 +215,28 @@ function showSession(db, s, json) {
   }
   if (details.outcome) out.push('Last answer:', `  ${details.outcome}`, '');
   return out.join('\n').trimEnd();
+}
+
+// --- summarize ------------------------------------------------------------------
+
+/**
+ * Write "what / why" notes for commits that have none, now, in the foreground:
+ * for one session, or for the sessions in scope (--since, --limit). Works even
+ * with CLAUDE_MEM_LITE_LLM_SUMMARY off - running it is the opt-in.
+ */
+function summarizeCommand(db, sessionArg, { projectId, since, limit }) {
+  const sessions = sessionArg ? [db.getSession(sessionArg)].filter(Boolean) : db.recentSessions({ projectId, since, limit });
+  if (!sessions.length) return sessionArg ? `Session not found: ${sessionArg}` : 'No sessions in scope.';
+  const lines = [];
+  let total = 0;
+  for (const s of sessions) {
+    const pending = pendingCommits(db, s.id).length;
+    if (!pending) continue;
+    const r = summarizePending(db, { sessionId: s.id, transcriptPath: findTranscript(s.id), budget: Infinity });
+    total += r.done;
+    lines.push(`${s.id.slice(0, 8)}  ${r.locked ? 'busy (a worker is on it)' : `${r.done} noted, ${r.skipped} without conversation, ${r.failed} failed`}`);
+  }
+  return lines.length ? [...lines, `${total} commit note(s) written.`].join('\n') : 'Every commit in scope already has a note.';
 }
 
 // --- replay ---------------------------------------------------------------------
@@ -295,6 +325,8 @@ function main() {
         return rest[0] ? `Deleted ${db.deleteSession(db.getSession(rest[0])?.id ?? rest[0])} session(s).` : 'Usage: forget <session-id>';
       case 'forget-project':
         return rest[0] ? `Deleted ${db.deleteProject(rest[0])} project(s).` : 'Usage: forget-project <project-id>';
+      case 'summarize':
+        return summarizeCommand(db, rest[0], { projectId, since: opts.since, limit: opts.limit });
       case 'reindex': {
         const r = reindexSome(db, { budget: Infinity, force: true });
         return `Rebuilt ${r.rebuilt} session(s) from their transcripts; ${r.missing} kept as legacy records (transcript no longer on disk).`;

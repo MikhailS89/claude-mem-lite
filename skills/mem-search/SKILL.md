@@ -13,7 +13,10 @@ needed (this keeps context small).
 
 Most answers are **segments**: the work up to one commit (its subject, the files
 it changed, the prompts behind it, minutes of active work), or the uncommitted
-tail of a session.
+tail of a session. When commit notes are on, a segment also carries `why:` -
+the reason for the change as stated in that conversation; treat it as the
+best available record of intent, and prefer the project's docs when they
+disagree.
 
 Base command (always quote the path — it may contain spaces):
 

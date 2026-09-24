@@ -36,6 +36,19 @@ export const debug = boolEnv('CLAUDE_MEM_LITE_DEBUG', false);
  */
 export const gitStatus = boolEnv('CLAUDE_MEM_LITE_GIT_STATUS', true);
 
+/**
+ * Summarise each commit's work ("what" and "why") with a small model, through
+ * the user's own Claude Code (`claude -p`). Off by default: it spends the
+ * user's quota, measured at about $0.01-0.015 and 10-20 s per commit with Haiku.
+ */
+export const llmSummary = boolEnv('CLAUDE_MEM_LITE_LLM_SUMMARY', false);
+
+/** Model for commit summaries (any `claude --model` value). */
+export const llmModel = env.CLAUDE_MEM_LITE_LLM_MODEL || 'haiku';
+
+/** Path to the `claude` executable, when it cannot be found automatically. */
+export const claudeBin = env.CLAUDE_MEM_LITE_CLAUDE_BIN || null;
+
 /** How many recent sessions SessionStart injects. */
 export const recallSessions = intEnv('CLAUDE_MEM_LITE_RECALL_SESSIONS', 5);
 

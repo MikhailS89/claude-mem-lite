@@ -14,9 +14,10 @@ few sessions is injected into Claude's context, and a `mem-search` skill lets
 Claude (or you) ask "when did we last touch this file, and what came of it?".
 
 Inspired by [claude-mem](https://github.com/thedotmack/claude-mem), rebuilt from
-scratch with a much smaller surface: **no network calls, no accounts, no
-daemons, no native modules, no dependencies.** About 2 700 lines of plain,
-commented JavaScript you can audit in one sitting.
+scratch with a much smaller surface: **no network calls of its own, no
+accounts, no daemons, no native modules, no dependencies.** (The one optional
+exception, commit notes, goes through your own Claude Code; off by default.)
+About 3 200 lines of plain, commented JavaScript you can audit in one sitting.
 
 ## Requirements
 
@@ -120,6 +121,32 @@ The recap describes where the work was left, not how busy the session was:
 - Sessions without commits (a review, a discussion) also show a cleaned-up
   `outcome:` (Claude's last message cut at a sentence boundary).
 
+**Commit notes (optional, off by default).** With
+`CLAUDE_MEM_LITE_LLM_SUMMARY=true`, each commit also gets a note from a small
+model: a type, one sentence of *what* and one of *why*. The reason is taken
+from the conversation in that commit's window, where it was actually said,
+not guessed from tool calls; when no reason was stated the note says so and
+nothing is shown. The recap then carries it under the newest session's
+commits:
+
+```
+  - 8d30976 Этап 4 завершён: черновики политики и оферты · 4 files · 4 min
+    why: создать правовые тексты так, чтобы проверенные юристом не перезаписывались без --force
+```
+
+How it runs: after a turn with new commits, the `Stop` hook starts a
+short-lived background process and returns at once; the process calls your
+own Claude Code (`claude -p`, Haiku by default) once per commit, stores the
+notes and exits. The call has no tools, is not saved as a session (it never
+appears in `--resume`), loads none of your settings or hooks, and runs with
+this plugin disabled so it cannot record itself. It uses your Claude
+subscription or API key as Claude Code does; measured cost is about
+**$0.01-0.015 and 10-20 seconds per commit**. What is sent: the commit
+subject, its file names, your prompts and Claude's replies in that window,
+after the same secret masking and `<private>` removal as everything stored.
+Commits without any conversation in their window are not sent at all.
+`search.mjs summarize` writes notes for past commits on demand.
+
 **`/claude-mem-lite:mem-search <words>`** — the skill Claude uses to look
 further back: `touched <file>` (when was it last changed, in which commit, and
 did that work hold), full-text search over commit subjects, prompts and paths,
@@ -140,6 +167,7 @@ node scripts/search.mjs forget ac6ab616          # delete one session
 node scripts/search.mjs forget-project git:github.com/me/repo
 node scripts/search.mjs where                    # db path + how the current project is identified
 node scripts/search.mjs reindex                  # rebuild old-format sessions from transcripts now
+node scripts/search.mjs summarize --since 7d     # write commit notes for past work (costs, see above)
 node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
                                                  # dry run: what the hooks would store and recall
                                                  # for a transcript, plus sanity checks; writes nothing
@@ -151,7 +179,9 @@ node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
 ## What is stored, and where
 
 Everything lives in **`~/.claude-mem-lite/memory.db`** (plus `hooks.log`).
-Nothing else is written anywhere; nothing is sent anywhere.
+Nothing else is written anywhere, and nothing is sent anywhere - except,
+when you turn commit notes on, the per-commit text described above, sent to
+the model through your own Claude Code.
 
 Per session:
 
@@ -252,6 +282,9 @@ src/segments.mjs             segments between commits, active time, undone/revis
 src/db.mjs                   node:sqlite schema, FTS5 search over sessions and segments
 src/capture.mjs              Stop/SessionEnd body
 src/reindex.mjs              rebuild rows written by older versions from transcripts
+src/llm.mjs                  one isolated `claude -p` call per commit -> {type, what, why}
+src/notes.mjs                which commits need a note; the background worker's loop
+scripts/notes-worker.mjs     the short-lived background process that writes notes
 src/recall.mjs               SessionStart recap
 skills/mem-search/SKILL.md   the skill
 test/                        node:test suite (npm test)
@@ -264,6 +297,9 @@ test/                        node:test suite (npm test)
 | `CLAUDE_MEM_LITE_ENABLED` | `true` | `false` disables all hooks |
 | `CLAUDE_MEM_LITE_DIR` | `~/.claude-mem-lite` | where `memory.db` and `hooks.log` live |
 | `CLAUDE_MEM_LITE_GIT_STATUS` | `true` | `false` skips `git status` after each turn (for huge repositories) |
+| `CLAUDE_MEM_LITE_LLM_SUMMARY` | `false` | `true` writes a what/why note per commit through `claude -p` (costs quota) |
+| `CLAUDE_MEM_LITE_LLM_MODEL` | `haiku` | model for commit notes |
+| `CLAUDE_MEM_LITE_CLAUDE_BIN` | auto | path to `claude` if it cannot be found (hooks get it from Claude Code; else `PATH`, else the VS Code extension) |
 | `CLAUDE_MEM_LITE_RECALL_SESSIONS` | `5` | sessions in the SessionStart recap |
 | `CLAUDE_MEM_LITE_CONTEXT_CHARS` | `4000` | hard cap on the recap size (at most 9000) |
 | `CLAUDE_MEM_LITE_MAX_PROMPTS` / `_PROMPT_CHARS` | `30` / `400` | prompts kept per session |
@@ -279,10 +315,12 @@ Set them in your shell profile or in Claude Code's `settings.json` under `"env"`
 See [IDEAS.md](IDEAS.md) for what could be done about these and what else is on
 the list.
 
-- Summaries are heuristic (no LLM): commits, files, prompts and state, not
-  *why* something was done. "Revisited after moving on" cannot tell rework
-  from a file that simply grows with each feature; it is a pointer, with
-  counts. An optional per-segment LLM summary is the next planned stage.
+- Without commit notes the record is heuristic: commits, files, prompts and
+  state, not *why*. Notes find a reason only if it was said in the
+  conversation. "Revisited after moving on" cannot tell rework from a file
+  that simply grows with each feature; it is a pointer, with counts.
+- The uncommitted tail of a session gets no note (there is no commit yet);
+  it is noted once committed, if that happens in a session with notes on.
 - Commits already packed by `git gc` cannot be read from `.git`; the recap then
   relies on what `git commit` printed in the transcript.
 - In `claude -p` (print) mode Claude Code stops background hooks almost as
@@ -346,8 +384,9 @@ CLAUDE_MEM_LITE_DIR=/tmp/mem CLAUDE_MEM_LITE_DEBUG=1 claude --plugin-dir . -p "h
 `/claude-mem-lite:mem-search` отвечает на «когда мы в последний раз трогали
 этот файл и чем кончилось».
 
-Безопасность: ничего не уходит в сеть, нет аккаунтов, демонов и нативных
-модулей; содержимое файлов и вывод инструментов не сохраняются; пути к
+Безопасность: сам плагин ничего не отправляет в сеть (единственное исключение —
+сводки коммитов, они по умолчанию выключены и идут через ваш же Claude Code),
+нет аккаунтов, демонов и нативных модулей; содержимое файлов и вывод инструментов не сохраняются; пути к
 секретам (`.env`, ключи, `.ssh/`) не записываются; токены и пароли в тексте
 маскируются; `<private>…</private>` вырезается. Выключить:
 `CLAUDE_MEM_LITE_ENABLED=false` или файл `<проект>/.claude-mem-lite/disabled`.

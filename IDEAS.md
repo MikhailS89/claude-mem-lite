@@ -137,6 +137,10 @@ ones in the recap or merge consecutive ones from the same day.
 
 ### 2.1 LLM summarisation (PLAN.md stage 2)
 
+Done in 0.4.0 as commit notes (src/llm.mjs, src/notes.mjs). Measured on real
+ApexFit commits: $0.01-0.015 and 10-20 s per commit, reasons found where the
+conversation stated them, "not stated" where it did not. Original plan below.
+
 Heuristic summaries answer *what was touched*, never *why*. Planned for 0.4.0:
 one cheap Haiku call per segment (not per tool call, as the original does),
 fed the segment's prompts, Claude's own explanations, its files and commit
