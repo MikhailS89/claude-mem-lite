@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { commitSession, sampleSession, toJsonl, writeLooseCommit } from './helpers.mjs';
+import { assistantText, bash, commitSession, sampleSession, toJsonl, userPrompt, writeLooseCommit } from './helpers.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'cml-hooks-'));
@@ -176,18 +176,53 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   ctx = recap();
   assert.match(ctx, /HEAD at end: 3333333 \(main\), now 9999999/);
 
-  // `git commit -q` prints nothing, so the commit is only found in .git.
-  const quiet = writeLooseCommit(join(repo, '.git'), { parent: sha('3'), subject: 'docs: quiet commit', time: Date.now() });
-  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${quiet}\n`);
+  // The session goes on and commits with `-q`: no output, so the commit is
+  // only found in .git, and it counts because it was made during that call.
+  // (Built in order: the helpers hand out increasing timestamps per call.)
+  const before = commitSession({ cwd: repo });
+  const quietCall = bash('git commit -qam "docs: quiet commit"', '', { cwd: repo, sessionId: 'sess-c' });
+  writeFileSync(transcript, toJsonl([...before, ...quietCall]));
+  const quiet = writeLooseCommit(join(repo, '.git'), { parent: sha('3'), subject: 'docs: quiet commit', time: Date.parse(quietCall[1].timestamp) });
+  // A commit typed in a terminal an hour later is on HEAD too, but not this session's.
+  const terminal = writeLooseCommit(join(repo, '.git'), { parent: quiet, subject: 'chore: by hand', time: Date.parse(quietCall[1].timestamp) + 3600_000 });
+  writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${terminal}\n`);
   r = runHook('session-stop.mjs', input, {}, dataDir);
   assert.equal(r.status, 0, r.stderr);
   ctx = recap();
-  assert.match(ctx, new RegExp(`3333333 feat: stage 1 content model\\n {2}- ${quiet.slice(0, 7)} docs: quiet commit`));
-  assert.match(ctx, new RegExp(`HEAD at end: ${quiet.slice(0, 7)} \\(main\\) · no edits after last commit`));
+  assert.match(ctx, new RegExp(`3333333 feat: stage 1 content model\\n {2}- ${quiet.slice(0, 7)} docs: quiet commit\\n`));
+  assert.doesNotMatch(ctx, /by hand/);
+  assert.match(ctx, new RegExp(`HEAD at end: ${terminal.slice(0, 7)} \\(main\\) · no edits after last commit`));
 
   r = runCli(['show', 'sess-c'], dataDir);
-  assert.match(r.stdout, new RegExp(`Commits:\\n {2}1111111 feat: stage 0 skeleton\\n {2}3333333 feat: stage 1 content model\\n {2}${quiet.slice(0, 7)} docs: quiet commit`));
-  assert.match(r.stdout, new RegExp(`HEAD at end: ${quiet.slice(0, 7)} \\(main\\)\\nEdited after last commit: none`));
+  assert.match(r.stdout, new RegExp(`Commits:\\n {2}1111111 feat: stage 0 skeleton\\n {2}3333333 feat: stage 1 content model\\n {2}${quiet.slice(0, 7)} docs: quiet commit\\n`));
+  assert.match(r.stdout, new RegExp(`HEAD at end: ${terminal.slice(0, 7)} \\(main\\)\\nEdited after last commit: none`));
+});
+
+test('recap stays well-formed when prompts, answers and commits contain emoji', () => {
+  const dataDir = join(tmp, 'emoji');
+  const repo = join(tmp, 'emoji-repo');
+  mkdirSync(repo, { recursive: true });
+  const transcript = join(tmp, 'sess-e.jsonl');
+  // Emoji placed so that the prompt (200) and outcome (300) cuts land inside pairs.
+  const prompt = 'x'.repeat(198) + '😀😀 and more';
+  const answer = 'y'.repeat(298) + '🐛🐛 tail';
+  writeFileSync(transcript, toJsonl([userPrompt('first 🚀', { cwd: repo }), userPrompt(prompt, { cwd: repo }), assistantText(answer, { cwd: repo })]));
+  const input = { session_id: 'sess-e', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' };
+  assert.equal(runHook('session-stop.mjs', input, {}, dataDir).status, 0);
+
+  const r = runHook('session-start.mjs', { ...input, session_id: 'next', hook_event_name: 'SessionStart' }, {}, dataDir);
+  const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  assert.ok(ctx.isWellFormed(), 'no lone surrogate');
+  assert.ok(!/[\uD800-\uDFFF]/.test(ctx), 'no astral characters at all in injected context');
+  assert.match(ctx, /last request: x+/);
+});
+
+test('a hook fired inside a subagent never touches the session record', () => {
+  const dataDir = join(tmp, 'subagent');
+  const r = runHook('session-stop.mjs', { ...baseInput, agent_id: 'a1', agent_type: 'Explore' }, {}, dataDir);
+  assert.equal(r.status, 0);
+  assert.equal(existsSync(join(dataDir, 'memory.db')), false);
+  assert.match(readFileSync(join(dataDir, 'hooks.log'), 'utf8'), /subagent hook/);
 });
 
 test('a missing transcript is skipped without creating anything', () => {

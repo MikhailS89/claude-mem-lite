@@ -12,7 +12,7 @@ Claude (or you) dig up older sessions on demand.
 
 Inspired by [claude-mem](https://github.com/thedotmack/claude-mem), rebuilt from
 scratch with a much smaller surface: **no network calls, no accounts, no
-daemons, no native modules, no dependencies.** About 1 300 lines of plain,
+daemons, no native modules, no dependencies.** About 1 800 lines of plain,
 commented JavaScript you can audit in one sitting.
 
 ## Requirements
@@ -57,7 +57,7 @@ plugin on your machine before enabling it.
 
 ## What you get
 
-**On `SessionStart`** (new session or `/clear`) Claude receives something like:
+**On `SessionStart`** (new session, `/clear`, or after `/compact`) Claude receives something like:
 
 ```
 # claude-mem-lite: previous sessions in this project (shopkit)
@@ -78,19 +78,24 @@ per-session cost of the plugin.
 
 The recap describes where the work was left, not how busy the session was:
 
-- **commits** come from two places, merged: `git commit` output in the
-  transcript (amended commits replace the original, failed ones are skipped,
-  commits made in another repository are dropped), and the commits on HEAD
-  made since the session started, read from `.git/objects` — which also
-  catches `git commit -q` and commits made in a terminal next to the session.
-  The recap lists the last 8.
+- **commits** are the ones this session made. They come from two places,
+  merged: `git commit` output in the transcript (amended commits replace the
+  original, failed ones are skipped, commits made in another repository are
+  dropped), and commits on HEAD read from `.git/objects`, which catches
+  `git commit -q` and output hidden behind `git log`. A commit from `.git`
+  counts only if it was made while one of the session's own committing git
+  commands was running, so commits from a parallel session on the same branch
+  or typed in a terminal are not attributed to it (they still show up as
+  HEAD having moved). The recap lists the last 8.
 - **HEAD at end** is read from `.git` when the session last saved; for the
   newest session the recap adds `now <sha>` if HEAD has moved since.
-- **edited after last commit** lists Claude's own edits after its last commit
-  in that session. Edits you made outside the session are invisible to the
-  plugin, so it never claims the working tree is clean.
-- **docs changed** (`docs/`, `*.md`, `*.rst`…) is listed before other files:
-  a doc edit usually records a decision, and the doc is where to read it.
+- **edited after last commit** lists Claude's own edits to project files after
+  its last commit in that session. Edits you made outside the session are
+  invisible to the plugin, so it never claims the working tree is clean.
+- **docs changed** (`docs/`, `*.md`, `*.rst`… inside the project) is listed
+  before other files: a doc edit usually records a decision, and the doc is
+  where to read it. Files outside the repository (notes under `~/`, other
+  repos) only appear at the end of `edited`.
 - Sessions without commits (a review, a discussion) show `ran:` and a cleaned-up
   `outcome:` (Claude's last message cut at a sentence boundary) instead.
 
@@ -113,6 +118,9 @@ node scripts/search.mjs projects
 node scripts/search.mjs forget ac6ab616      # delete one session
 node scripts/search.mjs forget-project git:github.com/me/repo
 node scripts/search.mjs where                # db path + how the current project is identified
+node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
+                                             # dry run: what the hooks would store and recall
+                                             # for a transcript, plus sanity checks; writes nothing
 ```
 
 ## What is stored, and where
@@ -129,7 +137,7 @@ Per session:
 | edited / read files | paths from `Read`/`Edit`/`Write`/`NotebookEdit` tool calls, relative to the project | 200 |
 | commands | `Bash` command lines | last 40, 200 chars each |
 | search patterns | `Grep`/`Glob` patterns | 20 |
-| commits | `[branch sha] subject` lines printed by `git` commands in the session, plus commits on HEAD since the session started (from `.git`) | last 30, 120 chars each |
+| commits | `[branch sha] subject` lines printed by `git` commands in the session, plus commits on HEAD made during the session's own committing git calls (from `.git`) | last 30, 120 chars each |
 | git state | HEAD branch and sha when the session last saved; files edited after the last commit | |
 | outcome | first 600 chars of Claude's final message | 600 chars |
 | stats | prompt count, tool call count, tools used, duration, branch | |
@@ -162,6 +170,11 @@ repo twice? Same memory.
 
 The filters are heuristics. If you paste a secret into a prompt in an unusual
 format, assume it may be stored — wrap it in `<private>` or delete the session.
+
+Emoji and other characters outside the Basic Multilingual Plane are shown as
+`•` in the recap. A cut through such a character leaves half of a UTF-16
+surrogate pair, which the API rejects for the rest of the session, so the
+recap never contains any.
 
 ## How it works
 
@@ -208,7 +221,7 @@ test/                        node:test suite (npm test)
 | `CLAUDE_MEM_LITE_ENABLED` | `true` | `false` disables all hooks |
 | `CLAUDE_MEM_LITE_DIR` | `~/.claude-mem-lite` | where `memory.db` and `hooks.log` live |
 | `CLAUDE_MEM_LITE_RECALL_SESSIONS` | `5` | sessions in the SessionStart recap |
-| `CLAUDE_MEM_LITE_CONTEXT_CHARS` | `4000` | hard cap on the recap size |
+| `CLAUDE_MEM_LITE_CONTEXT_CHARS` | `4000` | hard cap on the recap size (at most 9000) |
 | `CLAUDE_MEM_LITE_MAX_PROMPTS` / `_PROMPT_CHARS` | `30` / `400` | prompts kept per session |
 | `CLAUDE_MEM_LITE_MAX_COMMANDS` / `_COMMAND_CHARS` | `40` / `200` | commands kept per session |
 | `CLAUDE_MEM_LITE_MAX_FILES` | `200` | files kept per session |

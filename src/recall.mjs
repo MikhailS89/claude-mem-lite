@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { dbPath, enabled, isDisabledForProject, recallMaxChars, recallSessions } from './config.mjs';
 import { MemoryDb } from './db.mjs';
-import { truncate } from './privacy.mjs';
+import { bmpSafe, safeSlice, truncate } from './privacy.mjs';
 import { findGitRoot, readHead, resolveProject } from './project.mjs';
 import { briefText, commandHead, isDocPath } from './summarize.mjs';
 
@@ -131,12 +131,12 @@ export function buildRecall(input, { db = null } = {}) {
       const brief = formatSessionBrief(s, { currentHead: i === 0 ? currentHead : null }) + '\n\n';
       if (out.length + brief.length > recallMaxChars) {
         // Always show at least one session, even if it has to be cut.
-        if (out === header) out += brief.slice(0, recallMaxChars - out.length - 2) + '…\n';
+        if (out === header) out += safeSlice(brief, recallMaxChars - out.length - 2) + '…\n';
         break;
       }
       out += brief;
     }
-    return out.trimEnd();
+    return bmpSafe(out.trimEnd());
   } finally {
     if (own) store.close();
   }

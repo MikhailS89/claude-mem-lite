@@ -94,11 +94,17 @@ in the repository's docs; the recap points at the docs that changed.
 Commits on HEAD are read from loose objects only; decoding packfiles (deltas)
 is not worth it for this. Fresh commits stay loose until `git gc`, so the walk
 normally sees everything a session made, but after a `gc` it stops early and
-the recap falls back to what the transcript printed. Two other edges:
+the recap falls back to what the transcript printed. Other edges:
 
-- The walk takes every commit on HEAD newer than the session start, so a
-  commit made in a parallel session on the same branch shows up in both.
-  That matches "where the branch was left", but not "what this session did".
+- A commit found on HEAD is attributed to a session only if it was made
+  while one of that session's own committing git calls (`commit`, `merge`,
+  `rebase`…) was running (0.2.1; before that, parallel sessions on one branch
+  each claimed the other's commits). Consequence: commits typed by hand in a
+  terminal belong to no session; they only show up as "HEAD moved".
+- HEAD is read when the hook runs, so replaying or re-indexing an *old*
+  transcript sees today's HEAD, not the one at the end of that session. Any
+  migration of old rows must take "HEAD at end" from the session's last
+  attributed commit (or leave it empty), not from `.git/HEAD`.
 - Pack-index lookup (to drop commits made in other repositories) assumes
   SHA-1 `.idx` files; in a SHA-256 repository a packed commit counts as
   unknown and is dropped. Loose objects work for both.

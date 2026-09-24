@@ -60,7 +60,7 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
   ```
   Skills-directory plugins (.claude/skills/*):
     ❯ claude-mem-lite@skills-dir
-      Version: 0.2.0
+      Version: 0.2.1
       Scope: user
       Path: ~/.claude/skills/claude-mem-lite
       Status: ✔ loaded
@@ -94,7 +94,7 @@ $claude = (Get-ChildItem "$env:USERPROFILE\.vscode\extensions\anthropic.claude-c
 
 ## Как это работает в повседневной работе
 
-- **Ничего делать не нужно.** После каждого ответа Claude плагин обновляет запись о текущей сессии; при старте новой сессии (или после `/clear`) Claude получает сводку последних 5 сессий этого проекта: какие коммиты сделаны, на каком коммите остановились и не сдвинулся ли HEAD с тех пор, какие документы и файлы правились.
+- **Ничего делать не нужно.** После каждого ответа Claude плагин обновляет запись о текущей сессии; при старте новой сессии, после `/clear` и после `/compact` Claude получает сводку последних 5 сессий этого проекта: какие коммиты сделаны, на каком коммите остановились и не сдвинулся ли HEAD с тех пор, какие документы и файлы правились.
 - **Спросить про старое:** `/claude-mem-lite:mem-search <слова>` — например `/claude-mem-lite:mem-search nginx docker`. Без слов — покажет последние сессии. Claude сам найдёт нужную сессию и при необходимости запросит её детали.
 - **Скрыть кусок текста от памяти:** оберните его в `<private>…</private>` прямо в промпте.
 - **Проект определяется по git remote**, поэтому клон того же репозитория в другой папке видит ту же память.
@@ -257,8 +257,15 @@ alias mem='node ~/.claude/skills/claude-mem-lite/scripts/search.mjs'
   и внутри неё есть `.claude-plugin/plugin.json`, затем перезапустите Claude Code.
   Диагностика — в разделе «Откуда Claude Code загружает плагины автоматически».
 - **Лог хуков:** `~/.claude-mem-lite/hooks.log`. Для подробностей задайте `CLAUDE_MEM_LITE_DEBUG=true`.
+- **Сводка выглядит странно** (не те коммиты, лишние файлы) — прогоните транскрипт сессии
+  через `replay`: команда покажет, что плагин записал бы и вспомнил, ничего не меняя в базе.
+  Транскрипты лежат в `~/.claude/projects/<папка проекта>/<id сессии>.jsonl`.
+
+  ```bash
+  node ~/.claude/skills/claude-mem-lite/scripts/search.mjs replay <путь к .jsonl>
+  ```
 - **Хуки никогда не блокируют Claude Code:** при любой ошибке они молча выходят и пишут в лог.
-- **Самопроверка** (39 тестов, без сети):
+- **Самопроверка** (тесты без сети):
 
   ```bash
   cd ~/.claude/skills/claude-mem-lite && npm test                  # macOS / Linux

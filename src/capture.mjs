@@ -17,18 +17,44 @@ import { parseTranscriptFile } from './transcript.mjs';
  */
 export function captureSession(input, { final = false, db = null } = {}) {
   if (!enabled) return { skipped: 'disabled by CLAUDE_MEM_LITE_ENABLED' };
+  // Only the main conversation owns the session record. Claude Code turns Stop
+  // into SubagentStop inside subagents, so this is a guard, not a hot path: a
+  // subagent's transcript must never overwrite the session's row.
+  if (input.agent_id) return { skipped: 'subagent hook' };
   const sessionId = input.session_id;
   const transcriptPath = input.transcript_path;
   if (!sessionId || !transcriptPath) return { skipped: 'no session_id/transcript_path in hook input' };
   if (!existsSync(transcriptPath)) return { skipped: 'transcript file not found' };
 
   const cwd = input.cwd || process.cwd();
-  const project = resolveProject(cwd);
-  if (isDisabledForProject(project.root)) return { skipped: 'disabled for project' };
+  if (isDisabledForProject(resolveProject(cwd).root)) return { skipped: 'disabled for project' };
 
-  const transcript = parseTranscriptFile(transcriptPath);
+  const record = buildSessionRecord({ sessionId, transcriptPath, cwd, final, endReason: input.reason });
   // Nothing worth remembering yet (e.g. session opened and closed immediately).
-  if (transcript.prompts.length === 0 && transcript.toolUses.length === 0) return { skipped: 'empty transcript' };
+  if (!record) return { skipped: 'empty transcript' };
+
+  const own = db === null;
+  const store = db ?? new MemoryDb();
+  try {
+    store.upsertProject(record.project);
+    store.upsertSession(record.row, record.files);
+  } finally {
+    if (own) store.close();
+  }
+  logDebug('captured session', { sessionId, projectId: record.project.id, final, stats: record.stats });
+  return { sessionId, projectId: record.project.id, summary: record.row.summary };
+}
+
+/**
+ * Everything the database would store for one session, without storing it.
+ * Shared by the hooks and by `search.mjs replay`, so a replay exercises
+ * exactly the code the hooks run.
+ * @returns {{project: object, row: object, files: object[], stats: object}|null} null for an empty transcript
+ */
+export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = false, endReason = null }) {
+  const project = resolveProject(cwd);
+  const transcript = parseTranscriptFile(transcriptPath);
+  if (transcript.prompts.length === 0 && transcript.toolUses.length === 0) return null;
 
   // Stop runs after every turn, so the last capture holds HEAD at session end.
   const gitRoot = findGitRoot(cwd);
@@ -38,31 +64,20 @@ export function captureSession(input, { final = false, db = null } = {}) {
   const commitExists = objectLookup(gitRoot);
   const { title, summary, details, files, stats } = summarize(transcript, project, { head, headCommits, commitExists });
 
-  const own = db === null;
-  const store = db ?? new MemoryDb();
-  try {
-    store.upsertProject(project);
-    store.upsertSession(
-      {
-        id: sessionId,
-        projectId: project.id,
-        title,
-        branch: transcript.branch,
-        cwd,
-        startedAt: transcript.startedAt,
-        endedAt: transcript.endedAt,
-        status: final ? 'ended' : 'active',
-        endReason: final ? input.reason ?? 'other' : null,
-        summary,
-        details,
-        prompts: stats.prompts,
-        toolCalls: stats.toolCalls,
-      },
-      files,
-    );
-  } finally {
-    if (own) store.close();
-  }
-  logDebug('captured session', { sessionId, projectId: project.id, final, stats });
-  return { sessionId, projectId: project.id, summary };
+  const row = {
+    id: sessionId,
+    projectId: project.id,
+    title,
+    branch: transcript.branch,
+    cwd,
+    startedAt: transcript.startedAt,
+    endedAt: transcript.endedAt,
+    status: final ? 'ended' : 'active',
+    endReason: final ? endReason ?? 'other' : null,
+    summary,
+    details,
+    prompts: stats.prompts,
+    toolCalls: stats.toolCalls,
+  };
+  return { project, row, files, stats };
 }

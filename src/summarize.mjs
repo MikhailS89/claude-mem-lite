@@ -6,7 +6,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
 import { limits } from './config.mjs';
-import { isSensitivePath, sanitize, truncate } from './privacy.mjs';
+import { isSensitivePath, safeSlice, sanitize, truncate } from './privacy.mjs';
 import { describeToolUse } from './transcript.mjs';
 
 /**
@@ -51,9 +51,39 @@ export function commitsFromBash(command, result) {
   return out;
 }
 
-/** Files under `docs/` and prose files: edits there usually record a decision. */
+/** git subcommands that create commits. */
+const COMMITTING_GIT = /\bgit\b[^\n]*?\b(commit|merge|cherry-pick|revert|rebase|am|pull)\b/;
+
+/** Git commits carry whole seconds; the transcript has milliseconds. */
+const WINDOW_SLACK_MS = 2000;
+
+/**
+ * Time windows [from, to] (ms) in which this session's own git commands that
+ * can create commits were running: from the tool call to its result.
+ */
+export function commitWindows(toolUses) {
+  const out = [];
+  for (const u of toolUses) {
+    if (u.name !== 'Bash' || u.isError || !COMMITTING_GIT.test(u.input?.command ?? '')) continue;
+    const from = Date.parse(u.ts);
+    const to = Date.parse(u.resultTs ?? u.ts);
+    if (Number.isFinite(from) && Number.isFinite(to)) out.push([from - WINDOW_SLACK_MS, to + WINDOW_SLACK_MS]);
+  }
+  return out;
+}
+
+/** A display path inside the project (not `~/...` or another absolute path). */
+export function isProjectPath(p) {
+  return pathRank(p) === 0;
+}
+
+/**
+ * Project files under `docs/` and prose files: edits there usually record a
+ * decision. Files outside the repository (Claude's own notes, other repos)
+ * are not project docs and cannot be committed here.
+ */
 export function isDocPath(p) {
-  return /(^|\/)docs?\//i.test(p) || /\.(md|mdx|markdown|rst|adoc)$/i.test(p);
+  return isProjectPath(p) && (/(^|\/)docs?\//i.test(p) || /\.(md|mdx|markdown|rst|adoc)$/i.test(p));
 }
 
 /**
@@ -93,7 +123,8 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
       // edit/write outranks read
       if (d.file.kind !== 'read') {
         cur.kind = cur.kind === 'read' ? d.file.kind : cur.kind;
-        edits.push({ path: key, ms: Date.parse(use.ts) });
+        // Only files a commit here could contain count as "edited after the last commit".
+        if (isProjectPath(key)) edits.push({ path: key, ms: Date.parse(use.ts) });
       }
       files.set(key, cur);
     } else if (d.command) {
@@ -114,9 +145,14 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
     }
   }
 
-  // Commits on HEAD read from `.git` catch what the transcript cannot show:
-  // `git commit -q`, commits made in a terminal next to the session.
+  // Commits on HEAD read from `.git` catch what the transcript output cannot
+  // show (`git commit -q`, output replaced by `git log`). But HEAD also carries
+  // commits from parallel sessions and from a terminal, so one is attributed to
+  // this session only if it was made while one of its own committing git
+  // commands was running.
+  const windows = commitWindows(t.toolUses);
   for (const c of headCommits) {
+    if (!windows.some(([from, to]) => c.time >= from && c.time <= to)) continue;
     if (commits.some((x) => c.sha.startsWith(x.sha) || x.sha.startsWith(c.sha))) continue;
     commits.push({ sha: c.sha, subject: truncate(sanitize(c.subject), 120), branch: head?.ref ?? null, ts: new Date(c.time).toISOString() });
   }
@@ -214,11 +250,11 @@ export function briefText(text, max) {
     .replace(/\s+/g, ' ')
     .trim();
   if (s.length <= max) return s;
-  const head = s.slice(0, max);
+  const head = safeSlice(s, max);
   let cut = -1;
   for (const m of head.matchAll(/[.!?…](?=\s)/g)) cut = m.index + 1;
   if (cut >= max * 0.4) return head.slice(0, cut);
-  s = head.slice(0, max - 1);
+  s = safeSlice(head, max - 1);
   const space = s.lastIndexOf(' ');
   return (space > max * 0.4 ? s.slice(0, space) : s).trimEnd() + '…';
 }

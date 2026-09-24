@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { briefText, commandHead, commitsFromBash, displayPath, isDocPath, summarize } from '../src/summarize.mjs';
+import { briefText, commandHead, commitsFromBash, commitWindows, displayPath, isDocPath, summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
-import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
+import { bash, commitSession, sampleSession, toJsonl, toolUse } from './helpers.mjs';
 
 const project = { id: 'path:c:/proj', root: 'C:\\proj', name: 'proj' };
 
@@ -86,17 +86,16 @@ test('summarize records commits, amends and edits after the last commit', () => 
 });
 
 test('summarize merges commits read from .git with those seen in the transcript', () => {
-  const t = parseTranscript(toJsonl(commitSession()));
-  const at = (i) => Date.parse(t.toolUses[i].ts);
-  const readmeWrite = t.toolUses.findIndex((u) => u.name === 'Write');
+  // `git commit -q && git log --oneline`: the commit happened, but no `[branch sha]` line.
+  const t = parseTranscript(toJsonl([...commitSession(), ...bash('git commit -qam "docs: readme" && git log --oneline -1', 'ccccccc docs: readme')]));
+  const quietCall = t.toolUses[t.toolUses.length - 1];
   const full3 = '3333333'.padEnd(40, 'a');
   const quiet = 'c'.repeat(40);
   const r = summarize(t, project, {
     head: { ref: 'main', sha: quiet },
     headCommits: [
-      { sha: full3, subject: 'feat: stage 1 content model', time: at(readmeWrite) - 30_000 },
-      // `git commit -q` after the README write: invisible in the transcript output
-      { sha: quiet, subject: 'docs: readme', time: at(readmeWrite) + 1_000 },
+      { sha: full3, subject: 'feat: stage 1 content model', time: Date.parse(t.toolUses[6].ts) },
+      { sha: quiet, subject: 'docs: readme', time: Date.parse(quietCall.ts) + 500 },
     ],
   });
   assert.deepEqual(
@@ -109,6 +108,29 @@ test('summarize merges commits read from .git with those seen in the transcript'
     'no duplicate for a commit seen both ways',
   );
   assert.deepEqual(r.details.git.editedAfterLastCommit, [], 'the quiet commit covers the README edit');
+});
+
+test('commits on HEAD made outside this session\'s own git calls are not attributed to it', () => {
+  // Two sessions in parallel on one branch: HEAD carries both sessions' commits.
+  const t = parseTranscript(toJsonl([...commitSession(), ...bash('git commit -qam "mine"', '')]));
+  const mine = t.toolUses[t.toolUses.length - 1];
+  const r = summarize(t, project, {
+    headCommits: [
+      { sha: 'a'.repeat(40), subject: 'other session', time: Date.parse(mine.ts) - 60_000 },
+      { sha: 'b'.repeat(40), subject: 'mine', time: Date.parse(mine.resultTs) },
+      { sha: 'd'.repeat(40), subject: 'typed in a terminal later', time: Date.parse(mine.resultTs) + 60_000 },
+    ],
+  });
+  assert.deepEqual(r.details.commits.map((c) => c.subject).slice(-1), ['mine']);
+  assert.ok(!r.details.commits.some((c) => /other|terminal/.test(c.subject)));
+});
+
+test('commitWindows spans each committing git call from request to result', () => {
+  const t = parseTranscript(toJsonl([...bash('git status', ''), ...bash('npm test && git commit -m x', '[m 1234567] x'), ...bash('git push', 'ok')]));
+  const w = commitWindows(t.toolUses);
+  assert.equal(w.length, 1);
+  assert.equal(w[0][0], Date.parse(t.toolUses[1].ts) - 2000);
+  assert.equal(w[0][1], Date.parse(t.toolUses[1].resultTs) + 2000);
 });
 
 test('summarize drops transcript commits that are not in this repository', () => {
@@ -132,9 +154,22 @@ test('commitsFromBash only trusts git commands', () => {
   assert.doesNotMatch(commitsFromBash('git commit', '[m 1234567] ghp_abcdefghijklmnopqrstuvwxyz0123456789')[0].subject, /ghp_/);
 });
 
-test('isDocPath marks docs/ and prose files', () => {
+test('isDocPath marks docs/ and prose files inside the project only', () => {
   for (const p of ['docs/a.ts', 'README.md', 'x/y/ARCHITECTURE.MD', 'guide.rst', 'doc/notes.txt']) assert.ok(isDocPath(p), p);
-  for (const p of ['src/md.ts', 'mydocs/a.ts', 'a.mdx.ts']) assert.ok(!isDocPath(p), p);
+  for (const p of ['src/md.ts', 'mydocs/a.ts', 'a.mdx.ts', '~/.claude/projects/x/memory/MEMORY.md', 'D:/other/README.md']) assert.ok(!isDocPath(p), p);
+});
+
+test('files outside the project never count as edited after the last commit', () => {
+  const t = parseTranscript(
+    toJsonl([
+      ...commitSession(),
+      toolUse('Write', { file_path: 'C:\\Users\\me\\.claude\\projects\\p\\memory\\MEMORY.md', content: 'x' }, { sessionId: 'sess-c' }),
+    ]),
+  );
+  const r = summarize(t, { ...project, root: 'C:\\proj' }, {});
+  assert.deepEqual(r.details.git.editedAfterLastCommit, ['README.md']);
+  assert.ok(r.details.filesEdited.some((p) => p.endsWith('MEMORY.md')), 'still listed as an edited file');
+  assert.doesNotMatch(r.summary, /docs: [^·]*MEMORY/);
 });
 
 test('briefText drops markup and cuts at a sentence boundary', () => {

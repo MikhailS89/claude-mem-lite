@@ -32,8 +32,9 @@ const FILE_TOOLS = {
  * @property {string|null} startedAt   ISO timestamp of the first record
  * @property {string|null} endedAt     ISO timestamp of the last record
  * @property {{ts:string, text:string}[]} prompts
- * @property {{ts:string, id:string|null, name:string, input:object, result?:string, isError?:boolean}[]} toolUses
- *           `result` is the (truncated) output of a Bash call, when the transcript has it
+ * @property {{ts:string, id:string|null, name:string, input:object, result?:string, isError?:boolean, resultTs?:string|null}[]} toolUses
+ *           `result` is the (truncated) output of a Bash call and `resultTs` when it arrived,
+ *           when the transcript has them
  * @property {{ts:string, text:string}[]} assistantTexts  final text of each assistant turn
  * @property {number} lines  number of lines successfully parsed
  */
@@ -91,7 +92,7 @@ export function parseTranscript(text) {
     const content = rec.message?.content;
     if (rec.type === 'user') {
       if (rec.isMeta) continue;
-      attachResults(content, pendingBash);
+      attachResults(content, pendingBash, rec.timestamp ?? null);
       const prompt = extractPrompt(content);
       if (prompt) out.prompts.push({ ts: rec.timestamp ?? '', text: prompt });
       continue;
@@ -115,7 +116,7 @@ export function parseTranscript(text) {
 /** Bash output kept per call; commit lines are near the top, so the head is enough. */
 const RESULT_CHARS = 4000;
 
-function attachResults(content, pending) {
+function attachResults(content, pending, ts) {
   if (!Array.isArray(content)) return;
   for (const block of content) {
     if (block?.type !== 'tool_result') continue;
@@ -130,6 +131,7 @@ function attachResults(content, pending) {
           : '';
     use.result = text.slice(0, RESULT_CHARS);
     use.isError = block.is_error === true;
+    use.resultTs = ts; // when the command finished: together with `ts`, the window it ran in
   }
 }
 

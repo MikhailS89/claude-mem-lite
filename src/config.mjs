@@ -33,8 +33,13 @@ export const debug = boolEnv('CLAUDE_MEM_LITE_DEBUG', false);
 /** How many recent sessions SessionStart injects. */
 export const recallSessions = intEnv('CLAUDE_MEM_LITE_RECALL_SESSIONS', 5);
 
-/** Hard cap on the injected recap size (characters, ~4 chars per token). */
-export const recallMaxChars = intEnv('CLAUDE_MEM_LITE_CONTEXT_CHARS', 4000);
+/**
+ * Hard cap on the injected recap size (characters, ~4 chars per token).
+ * The recap is paid for in every session, so even an explicit setting is
+ * clamped. Should anything cut it further, the recap contains no surrogate
+ * pairs to split (see bmpSafe in privacy.mjs).
+ */
+export const recallMaxChars = Math.min(intEnv('CLAUDE_MEM_LITE_CONTEXT_CHARS', 4000), 9000);
 
 /** Per-item caps for what gets stored in the database. */
 export const limits = {

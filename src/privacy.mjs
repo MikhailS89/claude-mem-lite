@@ -92,11 +92,39 @@ export function redactSecrets(text) {
 
 /** Full pipeline for any free text destined for storage. */
 export function sanitize(text) {
-  return redactSecrets(stripPrivate(text));
+  return dropLoneSurrogates(redactSecrets(stripPrivate(text)));
+}
+
+// A lone UTF-16 surrogate in injected context makes the API reject every
+// request of the session ("no low surrogate in string"), and /clear re-injects
+// it. Strings are therefore never cut inside a surrogate pair, and lone
+// surrogates are dropped wherever text enters or leaves the plugin.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+export function dropLoneSurrogates(text) {
+  return String(text ?? '').replace(LONE_SURROGATE, '');
+}
+
+/** `s.slice(0, end)` that never ends between the two halves of a surrogate pair. */
+export function safeSlice(text, end) {
+  const s = String(text ?? '');
+  let n = Math.max(0, Math.min(end, s.length));
+  const last = s.charCodeAt(n - 1);
+  if (n > 0 && n < s.length && last >= 0xd800 && last <= 0xdbff) n--;
+  return s.slice(0, n);
+}
+
+/**
+ * Make text safe to inject into Claude's context: no lone surrogates, and no
+ * astral code points at all (emoji and the like become "•"), so that even a
+ * cut made later by Claude Code at a UTF-16 boundary cannot split a pair.
+ */
+export function bmpSafe(text) {
+  return dropLoneSurrogates(text).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '•');
 }
 
 /** Cut a string to `max` characters, collapsing whitespace. */
 export function truncate(text, max) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? s.slice(0, Math.max(0, max - 1)).trimEnd() + '…' : s;
+  return s.length > max ? safeSlice(s, Math.max(0, max - 1)).trimEnd() + '…' : s;
 }

@@ -10,14 +10,20 @@
 //   search.mjs forget <session-id>   delete one session
 //   search.mjs forget-project <id>   delete a project and all its sessions
 //   search.mjs where                 print database location and current project id
+//   search.mjs replay <file.jsonl>   dry run: what the hooks would store and recall for a
+//                                    transcript, without touching the database
 //
 // Flags: --all (every project)  --project <id>  --limit <n>  --json  --cwd <dir>
 
 import { existsSync } from 'node:fs';
+import { basename } from 'node:path';
+import { buildSessionRecord } from '../src/capture.mjs';
 import { dbPath, enabled } from '../src/config.mjs';
 import { MemoryDb } from '../src/db.mjs';
-import { resolveProject } from '../src/project.mjs';
-import { fmtTime, isLikelyOpen } from '../src/recall.mjs';
+import { bmpSafe } from '../src/privacy.mjs';
+import { findGitRoot, readHead, resolveProject } from '../src/project.mjs';
+import { fmtTime, formatSessionBrief, isLikelyOpen } from '../src/recall.mjs';
+import { parseTranscriptFile } from '../src/transcript.mjs';
 
 function parseArgs(argv) {
   const opts = { all: false, project: null, limit: 10, json: false, cwd: process.cwd(), positional: [] };
@@ -27,7 +33,7 @@ function parseArgs(argv) {
     else if (a === '--json') opts.json = true;
     else if (a === '--project') opts.project = argv[++i];
     else if (a === '--limit') opts.limit = Math.max(1, Number.parseInt(argv[++i], 10) || 10);
-    else if (a === '--cwd') opts.cwd = argv[++i];
+    else if (a === '--cwd') (opts.cwd = argv[++i]), (opts.cwdGiven = true);
     else if (a === '--help' || a === '-h') opts.help = true;
     else opts.positional.push(a);
   }
@@ -45,6 +51,7 @@ function usage() {
   search.mjs forget <session-id>   delete one session
   search.mjs forget-project <id>   delete a project and all its sessions
   search.mjs where                 database location and current project id
+  search.mjs replay <file.jsonl>   dry run of capture + recap on a transcript (no db writes)
 
 Flags: --all  --project <id>  --limit <n>  --json  --cwd <dir>
 Database: ${dbPath}`;
@@ -115,6 +122,47 @@ function showSession(db, id, json) {
   return out.join('\n').trimEnd();
 }
 
+/**
+ * Run the capture pipeline on a transcript and show what would be stored and
+ * recalled, plus the invariants every recap must hold. Writes nothing.
+ */
+function replay(transcriptPath, opts) {
+  if (!existsSync(transcriptPath)) return `Transcript not found: ${transcriptPath}`;
+  const parsed = parseTranscriptFile(transcriptPath);
+  const cwd = opts.cwdGiven ? opts.cwd : parsed.cwd ?? opts.cwd;
+  const sessionId = parsed.sessionId ?? basename(transcriptPath, '.jsonl');
+  const started = performance.now();
+  const record = buildSessionRecord({ sessionId, transcriptPath, cwd });
+  const ms = Math.round(performance.now() - started);
+  if (!record) return 'Empty transcript: nothing would be stored.';
+  if (opts.json) return JSON.stringify(record, null, 2);
+
+  const { row } = record;
+  const brief = bmpSafe(
+    formatSessionBrief(
+      { id: row.id, started_at: row.startedAt, updated_at: row.endedAt, branch: row.branch, title: row.title, status: 'ended', details: JSON.stringify(row.details) },
+      { currentHead: readHead(findGitRoot(cwd)) },
+    ),
+  );
+  const checks = [
+    ['recap is well-formed UTF-16', brief.isWellFormed()],
+    ['recap has no astral characters', !/[\uD800-\uDFFF]/.test(brief)],
+    ['stored row is well-formed UTF-16', JSON.stringify(row).isWellFormed()],
+  ];
+  return [
+    `Transcript: ${transcriptPath}`,
+    `Project:    ${record.project.id}  (cwd ${cwd})`,
+    `Captured in ${ms} ms: ${record.stats.prompts} prompts, ${record.stats.toolCalls} tool calls, ${row.details.commits.length} commits`,
+    '',
+    'Recap entry:',
+    brief,
+    '',
+    `Summary: ${row.summary}`,
+    '',
+    ...checks.map(([name, ok]) => `${ok ? 'ok  ' : 'FAIL'} ${name}`),
+  ].join('\n');
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) return usage();
@@ -126,6 +174,7 @@ function main() {
     return JSON.stringify({ dbPath, exists: existsSync(dbPath), enabled, project }, null, 2);
   }
   if (!cmd) return usage();
+  if (cmd === 'replay') return rest[0] ? replay(rest[0], opts) : 'Usage: replay <transcript.jsonl> [--cwd <project dir>]';
   if (!existsSync(dbPath)) return `No memory database yet (${dbPath}). It is created after the first session with the plugin enabled.`;
 
   const db = new MemoryDb();

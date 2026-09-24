@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isSensitivePath, redactSecrets, sanitize, stripPrivate, truncate } from '../src/privacy.mjs';
+import { bmpSafe, dropLoneSurrogates, isSensitivePath, redactSecrets, safeSlice, sanitize, stripPrivate, truncate } from '../src/privacy.mjs';
 
 test('stripPrivate removes tagged blocks, including unclosed ones', () => {
   assert.equal(stripPrivate('keep <private>drop this</private> keep'), 'keep [private] keep');
@@ -67,4 +67,25 @@ test('truncate collapses whitespace and appends an ellipsis', () => {
   assert.equal(truncate('a  b\n\nc', 100), 'a b c');
   assert.equal(truncate('abcdefghij', 5), 'abcd…');
   assert.equal(truncate(null, 5), '');
+});
+
+// Any string that reaches Claude's context must be well-formed UTF-16: a lone
+// surrogate makes the API reject every request of the session.
+const wellFormed = (s) => s.isWellFormed();
+
+test('truncate and safeSlice never split a surrogate pair', () => {
+  const s = 'Готово 😀 теперь 🐛 ещё';
+  for (let max = 1; max <= s.length + 1; max++) {
+    assert.ok(wellFormed(truncate(s, max)), `truncate at ${max}: ${JSON.stringify(truncate(s, max))}`);
+    assert.ok(wellFormed(safeSlice(s, max)), `safeSlice at ${max}`);
+  }
+  assert.equal(safeSlice('ab😀', 3), 'ab', 'cut inside the pair drops the half');
+  assert.equal(safeSlice('ab😀', 4), 'ab😀');
+});
+
+test('dropLoneSurrogates and bmpSafe repair and flatten text', () => {
+  assert.equal(dropLoneSurrogates('a\uD83Db\uDE00c'), 'abc');
+  assert.equal(dropLoneSurrogates('ok 😀'), 'ok 😀');
+  assert.equal(bmpSafe('fix 🐛 in ✨ parser \uD83D'), 'fix • in ✨ parser ');
+  assert.ok(wellFormed(sanitize('broken \uD83D input')));
 });
