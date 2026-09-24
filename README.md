@@ -17,7 +17,7 @@ Inspired by [claude-mem](https://github.com/thedotmack/claude-mem), rebuilt from
 scratch with a much smaller surface: **no network calls of its own, no
 accounts, no daemons, no native modules, no dependencies.** (The one optional
 exception, commit notes, goes through your own Claude Code; off by default.)
-About 3 200 lines of plain, commented JavaScript you can audit in one sitting.
+About 3 300 lines of plain, commented JavaScript you can audit in one sitting.
 
 ## Requirements
 
@@ -147,6 +147,27 @@ after the same secret masking and `<private>` removal as everything stored.
 Commits without any conversation in their window are not sent at all.
 `search.mjs summarize` writes notes for past commits on demand.
 
+**File history, when Claude opens a file.** The first time Claude reads or
+edits a file in a session (`Read`, `Edit`, `Write`, `NotebookEdit`), the
+tool result carries that file's history from earlier sessions, if it has any:
+
+```
+claude-mem-lite: src/db.mjs in earlier sessions (4 changes):
+- 2026-09-24 f327421 feat: 0.4.0 commit notes - what and why per commit, via claude -p
+- 2026-09-23 786ad2b feat: recap shows commits and git state ... - why: the plugin should show state, not activity
+- revisited after moving on (23 edits in 3 segments) in session f2d518c0
+- more: mem-search `touched src/db.mjs`
+```
+
+So before changing a file Claude sees that the last approach was replaced, or
+why the current one was chosen, without running `git log` or searching.
+Nothing is shown for files without history, and each file is shown once per
+session. The hook must be synchronous for its output to reach Claude, so every
+`Read`/`Edit`/`Write` call waits for one Node start (~0.2 s here); in real
+sessions that added up to a few seconds to a minute over many hours. Turn it
+off with `CLAUDE_MEM_LITE_FILE_HINTS=false`. Files read through the shell
+(`cat`, `sed`) do not trigger it.
+
 **`/claude-mem-lite:mem-search <words>`** — the skill Claude uses to look
 further back: `touched <file>` (when was it last changed, in which commit, and
 did that work hold), full-text search over commit subjects, prompts and paths,
@@ -237,15 +258,17 @@ recap never contains any.
 
 ```
 Claude Code ──SessionStart──▶ scripts/session-start.mjs ──▶ reads SQLite, prints recap as additionalContext
+            ──PostToolUse──▶ scripts/file-hint.mjs     ──▶ (Read/Edit/Write) a file's history, once per file
             ──Stop─────────▶ scripts/session-stop.mjs  ──▶ parses the session transcript (.jsonl),
             ──SessionEnd───▶ scripts/session-end.mjs   ──▶ compresses it, upserts one row per session
 ```
 
-There is no `PostToolUse` hook: Claude Code already writes every tool call to
-the transcript file, so the plugin simply re-reads that file after each turn
-(≈150 ms including Node start-up, runs in the background) instead of spawning
-a process on every tool call. `Stop` and `SessionEnd` run the same idempotent
-code; the only difference is that `SessionEnd` marks the session as ended.
+Capture does not use per-tool hooks: Claude Code already writes every tool
+call to the transcript file, so the plugin re-reads that file after each turn
+(≈150 ms including Node start-up, in the background). `Stop` and `SessionEnd`
+run the same idempotent code; the only difference is that `SessionEnd` marks
+the session as ended. The one per-tool hook, `PostToolUse` on file reads and
+edits, only reads the database to show a file's history (below).
 
 Everything about git is read straight from the files under `.git` (HEAD,
 refs, loose commit objects, pack indexes) with one exception: `git status`,
@@ -285,6 +308,7 @@ src/reindex.mjs              rebuild rows written by older versions from transcr
 src/llm.mjs                  one isolated `claude -p` call per commit -> {type, what, why}
 src/notes.mjs                which commits need a note; the background worker's loop
 scripts/notes-worker.mjs     the short-lived background process that writes notes
+src/hints.mjs                a file's history for the PostToolUse hook (scripts/file-hint.mjs)
 src/recall.mjs               SessionStart recap
 skills/mem-search/SKILL.md   the skill
 test/                        node:test suite (npm test)
@@ -299,6 +323,7 @@ test/                        node:test suite (npm test)
 | `CLAUDE_MEM_LITE_GIT_STATUS` | `true` | `false` skips `git status` after each turn (for huge repositories) |
 | `CLAUDE_MEM_LITE_LLM_SUMMARY` | `false` | `true` writes a what/why note per commit through `claude -p` (costs quota) |
 | `CLAUDE_MEM_LITE_LLM_MODEL` | `haiku` | model for commit notes |
+| `CLAUDE_MEM_LITE_FILE_HINTS` | `true` | `false` turns off file history on Read/Edit/Write (saves ~0.2 s per call) |
 | `CLAUDE_MEM_LITE_CLAUDE_BIN` | auto | path to `claude` if it cannot be found (hooks get it from Claude Code; else `PATH`, else the VS Code extension) |
 | `CLAUDE_MEM_LITE_RECALL_SESSIONS` | `5` | sessions in the SessionStart recap |
 | `CLAUDE_MEM_LITE_CONTEXT_CHARS` | `4000` | hard cap on the recap size (at most 9000) |

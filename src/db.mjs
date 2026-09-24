@@ -9,6 +9,7 @@
 //                 uncommitted tail (see segments.mjs)
 //   segment_files files edited per segment, for "when did we last touch X?"
 //   segments_fts  FTS5 index over a segment's commit subject, prompts, files and note
+//   file_hints    which files already got a history hint in a session (hints.mjs)
 //   commit_notes  "what" and "why" of a commit, written by a small model (llm.mjs);
 //                 keyed by sha because segments are rewritten after every turn
 //
@@ -84,6 +85,12 @@ CREATE TABLE IF NOT EXISTS segment_files (
   FOREIGN KEY (session_id, seq) REFERENCES segments(session_id, seq) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS segment_files_path ON segment_files(path);
+CREATE TABLE IF NOT EXISTS file_hints (
+  session_id TEXT NOT NULL,
+  path       TEXT NOT NULL,
+  shown_at   TEXT NOT NULL,
+  PRIMARY KEY (session_id, path)
+);
 CREATE TABLE IF NOT EXISTS commit_notes (
   commit_sha TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -115,12 +122,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
 `;
 
 export class MemoryDb {
-  /** @param {string} [path] defaults to config.dbPath; ':memory:' for tests */
-  constructor(path = defaultDbPath) {
+  /**
+   * @param {string} [path] defaults to config.dbPath; ':memory:' for tests
+   * @param {{busyTimeoutMs?: number}} [opts] how long to wait for a writer;
+   *        a hook that blocks Claude (file hints) waits briefly and gives up
+   */
+  constructor(path = defaultDbPath, { busyTimeoutMs = 3000 } = {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
     this.db.exec('PRAGMA journal_mode = WAL');
-    this.db.exec('PRAGMA busy_timeout = 3000');
     this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec(SCHEMA);
     this.db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
@@ -248,6 +259,39 @@ export class MemoryDb {
       const noteText = n ? [n.what, n.why] : [];
       insFts.run(sessionId, s.seq, s.commit?.subject ?? '', [...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path), ...noteText].join('\n'));
     }
+  }
+
+  // --- file hints ---------------------------------------------------------------
+
+  /** Mark a file as hinted in a session; false when it already was. */
+  claimFileHint(sessionId, path) {
+    return this.db.prepare('INSERT OR IGNORE INTO file_hints(session_id, path, shown_at) VALUES (?, ?, ?)').run(sessionId, path, new Date().toISOString()).changes > 0;
+  }
+
+  /**
+   * Segments of *other* sessions that edited exactly `path`, newest first,
+   * with their commit note and the rework verdicts of their session.
+   */
+  fileHistory(path, { projectId, excludeSessionId = null, limit = 3 }) {
+    const rows = this.db
+      .prepare(
+        `${SEGMENT_SELECT} WHERE g.project_id = ? AND g.session_id != ?
+           AND EXISTS (SELECT 1 FROM segment_files f WHERE f.session_id = g.session_id AND f.seq = g.seq AND f.path = ?)
+         ORDER BY g.ended_at DESC, g.seq DESC LIMIT ?`,
+      )
+      .all(projectId, excludeSessionId ?? '', path, limit);
+    const total = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM segment_files f JOIN segments g ON g.session_id = f.session_id AND g.seq = f.seq
+         WHERE g.project_id = ? AND g.session_id != ? AND f.path = ?`,
+      )
+      .get(projectId, excludeSessionId ?? '', path).n;
+    const rework = [];
+    for (const sessionId of new Set(rows.map((r) => r.session_id))) {
+      const d = parsedDetails(this.db.prepare('SELECT details FROM sessions WHERE id = ?').get(sessionId)?.details ?? '{}');
+      for (const r of d.rework ?? []) if (r.path === path) rework.push({ ...r, sessionId });
+    }
+    return { rows, total, rework };
   }
 
   // --- commit notes -----------------------------------------------------------

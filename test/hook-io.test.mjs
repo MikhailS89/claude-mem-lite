@@ -37,6 +37,14 @@ test('readHookInput handles empty, malformed and stalled input', async () => {
   assert.deepEqual(await readHookInput(stream, 50), {}, 'nothing at all: give up quietly');
 });
 
+test('the file-history hook is synchronous and covers reads and edits', () => {
+  const hooks = JSON.parse(readFileSync(join(root, 'hooks', 'hooks.json'), 'utf8'));
+  const [entry] = hooks.hooks.PostToolUse;
+  assert.deepEqual(entry.matcher.split('|').sort(), ['Edit', 'MultiEdit', 'NotebookEdit', 'Read', 'Write']);
+  assert.equal(entry.hooks[0].async, undefined, 'async hooks cannot add context');
+  assert.ok(entry.hooks[0].timeout <= 5);
+});
+
 test('SessionStart also fires after /compact', () => {
   const hooks = JSON.parse(readFileSync(join(root, 'hooks', 'hooks.json'), 'utf8'));
   const matcher = hooks.hooks.SessionStart[0].matcher.split('|');

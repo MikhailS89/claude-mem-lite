@@ -60,7 +60,7 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
   ```
   Skills-directory plugins (.claude/skills/*):
     ❯ claude-mem-lite@skills-dir
-      Version: 0.4.0
+      Version: 0.5.0
       Scope: user
       Path: ~/.claude/skills/claude-mem-lite
       Status: ✔ loaded
@@ -149,6 +149,20 @@ Remove-Item -Recurse "$env:USERPROFILE\.claude-mem-lite"    # Windows
 ```bash
 alias mem='node ~/.claude/skills/claude-mem-lite/scripts/search.mjs'
 ```
+
+## История файла при открытии
+
+Когда Claude в сессии впервые читает или правит файл (`Read`, `Edit`, `Write`),
+вместе с результатом он получает историю этого файла из прошлых сессий, если она
+есть: последние коммиты с «почему», пометки о переделках. Так он видит, что
+прежний подход уже заменяли, до того как начнёт менять файл, — без `git log` и
+поиска. Для файлов без истории ничего не показывается, для каждого файла —
+один раз за сессию.
+
+Цена — примерно 0,2 секунды на каждый вызов `Read`/`Edit`/`Write` (запуск Node).
+Если это мешает, выключите: `"CLAUDE_MEM_LITE_FILE_HINTS": "false"` в `env` файла
+`~/.claude/settings.json`. Файлы, прочитанные через терминал (`cat`), подсказку
+не вызывают.
 
 ## Сводки «что и почему» по коммитам (по желанию)
 

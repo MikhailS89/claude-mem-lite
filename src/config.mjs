@@ -49,6 +49,13 @@ export const llmModel = env.CLAUDE_MEM_LITE_LLM_MODEL || 'haiku';
 /** Path to the `claude` executable, when it cannot be found automatically. */
 export const claudeBin = env.CLAUDE_MEM_LITE_CLAUDE_BIN || null;
 
+/**
+ * When Claude first reads or edits a file in a session, show a line or two of
+ * that file's history from earlier sessions (last commits, why, rework). The
+ * hook costs a Node start (~50-150 ms) per Read/Edit/Write call.
+ */
+export const fileHints = boolEnv('CLAUDE_MEM_LITE_FILE_HINTS', true);
+
 /** How many recent sessions SessionStart injects. */
 export const recallSessions = intEnv('CLAUDE_MEM_LITE_RECALL_SESSIONS', 5);
 

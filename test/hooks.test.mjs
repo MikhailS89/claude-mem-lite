@@ -275,6 +275,28 @@ test('with LLM summaries on, Stop starts a background worker that writes commit 
   assert.match(recap, /- 1111111 feat: stage 0 skeleton[^\n]*\n {4}why: because of feat: stage 0 skeleton\n/);
 });
 
+test('the file-hint hook adds a file\'s history to the tool result, once, and can be turned off', () => {
+  const dataDir = join(tmp, 'hints');
+  // No .git: with an empty one the transcript's commits would rightly be
+  // dropped as not belonging to this repository.
+  const repo = join(tmp, 'hints-repo');
+  mkdirSync(repo, { recursive: true });
+  const transcript = join(tmp, 'sess-h.jsonl');
+  writeFileSync(transcript, toJsonl(commitSession({ cwd: repo, sessionId: 'sess-h' })));
+  runHook('session-stop.mjs', { session_id: 'sess-h', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' }, { CLAUDE_MEM_LITE_GIT_STATUS: 'false' }, dataDir);
+
+  const read = { session_id: 'later', cwd: repo, hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: join(repo, 'src', 'a.ts') } };
+  let r = runHook('file-hint.mjs', read, {}, dataDir);
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout).hookSpecificOutput;
+  assert.equal(out.hookEventName, 'PostToolUse');
+  assert.match(out.additionalContext, /^claude-mem-lite: src\/a\.ts in earlier sessions \(1 change\):\n- \d{4}-\d{2}-\d{2} 1111111 feat: stage 0 skeleton$/);
+
+  assert.equal(runHook('file-hint.mjs', read, {}, dataDir).stdout, '', 'second touch in the same session: silent');
+  assert.equal(runHook('file-hint.mjs', { ...read, session_id: 'third' }, { CLAUDE_MEM_LITE_FILE_HINTS: 'false' }, dataDir).stdout, '');
+  assert.equal(runHook('file-hint.mjs', { ...read, tool_input: { file_path: join(repo, 'src', 'never.ts') } }, {}, dataDir).stdout, '');
+});
+
 test('with LLM summaries off (the default), no worker and no notes', () => {
   const dataDir = join(tmp, 'no-notes');
   const repo = join(tmp, 'no-notes-repo');
