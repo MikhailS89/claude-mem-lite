@@ -66,9 +66,16 @@ currently no way to say "forget anything older than a year" short of
 `forget-project`. Worth adding: `search.mjs prune --older-than 180d`, plus
 `VACUUM` afterwards.
 
-### 1.5 `SessionEnd` does not fire in `claude -p`
+### 1.5 `claude -p`: background hooks are cut short
 
-Sessions captured in print mode stay `status = 'active'` forever.
+Measured with 0.3.0: in print mode Claude Code stops the async `Stop` hook as
+soon as it prints its answer. 0.2.1 wrote the row ~65 ms after the hook
+started and usually won the race; 0.3.0 runs `git status` first (~60 ms more)
+and lost it, so the last turn of a `-p` session may not be recorded. Possible
+fix: write the row first and add the worktree state in a second, cheap update,
+so the part that matters most lands earliest.
+
+Sessions captured in print mode also stay `status = 'active'` forever.
 `isLikelyOpen()` in [src/recall.mjs](src/recall.mjs) papers over this by only
 calling a session "possibly still open" for two hours, but the status column
 itself is unreliable. Fix: on capture, mark any *other* `active` session of the

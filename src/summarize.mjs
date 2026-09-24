@@ -230,6 +230,7 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
     },
     { maxPrompts: 10, maxFiles: 60 },
   );
+  moveUncommittedToTail(segments, worktree, t.endedAt);
 
   // --- index-level summary ---------------------------------------------------
   const parts = [];
@@ -269,6 +270,30 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
   };
 
   return { title, summary, details, files: fileList.slice(0, limits.files), stats };
+}
+
+/**
+ * A segment holds the files edited in its time window, which is not always
+ * what its commit contained: a file edited before the last commit but left
+ * out of it is still uncommitted. `git status` at the end of the session says
+ * which; those files move from the last commit's segment to the open one.
+ * (Earlier segments cannot be corrected this way; their file lists stay "edited
+ * in this window".)
+ */
+function moveUncommittedToTail(segments, worktree, endedAt) {
+  if (!worktree || worktree.clean || !worktree.paths.length) return;
+  const lastCommitted = segments.findLast((g) => g.commit);
+  if (!lastCommitted) return;
+  const dirty = new Set(worktree.paths);
+  const moved = lastCommitted.files.filter((f) => dirty.has(f.path));
+  if (!moved.length) return;
+  lastCommitted.files = lastCommitted.files.filter((f) => !dirty.has(f.path));
+  let tail = segments[segments.length - 1];
+  if (tail.commit) {
+    tail = { seq: lastCommitted.seq + 1, startedAt: lastCommitted.endedAt, endedAt: endedAt ?? lastCommitted.endedAt, activeMin: 0, commit: null, files: [], prompts: [] };
+    segments.push(tail);
+  }
+  for (const f of moved) if (!tail.files.some((x) => x.path === f.path)) tail.files.push(f);
 }
 
 /**

@@ -194,3 +194,19 @@ test('summarize stores segments, rework and the details format', () => {
   assert.deepEqual(r.details.git.worktree, { clean: true, count: 0, paths: [], hidden: 0 });
   assert.deepEqual(r.details.rework, []);
 });
+
+test('a file edited before the last commit but left out of it moves to the uncommitted tail', () => {
+  // Both files written first, then only one committed: `git status` shows the other.
+  const r = summarize(parseTranscript(toJsonl([
+    toolUse('Write', { file_path: 'C:\\proj\\a.md', content: 'a' }),
+    toolUse('Write', { file_path: 'C:\\proj\\b.md', content: 'b' }),
+    ...bash('git add a.md && git commit -m "docs: first file"', '[master 622b41f] docs: first file'),
+  ])), project, { worktree: { clean: false, count: 1, paths: ['b.md'], hidden: 0 } });
+  assert.deepEqual(
+    r.details.segments.map((g) => [g.commit?.sha ?? 'open', g.files.map((f) => f.path)]),
+    [
+      ['622b41f', ['a.md']],
+      ['open', ['b.md']],
+    ],
+  );
+});

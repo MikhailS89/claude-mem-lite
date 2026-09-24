@@ -285,8 +285,15 @@ the list.
   counts. An optional per-segment LLM summary is the next planned stage.
 - Commits already packed by `git gc` cannot be read from `.git`; the recap then
   relies on what `git commit` printed in the transcript.
-- In `claude -p` (print) mode `SessionEnd` does not fire; the session is still
-  captured by `Stop`, it just isn't marked as ended.
+- In `claude -p` (print) mode Claude Code stops background hooks as soon as it
+  exits, so the capture after the last answer can be cut short and that
+  session may be missing or out of date. Interactive sessions are not
+  affected: the hook has the time between turns, and `SessionEnd` (which
+  runs in the foreground) captures the end.
+- A segment lists the files edited in its window, which is not always exactly
+  what its commit contained (a file can be edited before a commit and
+  committed later). For the last commit this is corrected from `git status`;
+  earlier segments stay approximate.
 - Subagent (sidechain) activity is not recorded.
 - `node:sqlite` is marked experimental by Node; the API used here (`DatabaseSync`,
   `prepare/run/get/all`) has been stable since Node 22.13.
