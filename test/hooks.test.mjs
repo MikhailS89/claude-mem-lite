@@ -77,9 +77,9 @@ test('stop -> end -> start round trip injects a recap', () => {
   const ctx = out.hookSpecificOutput.additionalContext;
   assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
   assert.match(ctx, /Login bug fix/);
-  assert.match(ctx, /edited: src\/auth\.ts, test\/auth\.test\.ts/);
-  assert.match(ctx, /ran: npm test, git commit/);
+  assert.match(ctx, /- no commits recorded · 2 files: src\/auth\.ts, test\/auth\.test\.ts/);
   assert.match(ctx, /Thanks, also update the docs/);
+  assert.match(ctx, /- outcome: Docs updated in README\.md\./);
   assert.match(ctx, /mem-search/);
   assert.ok(!ctx.includes('.env'));
   assert.ok(!ctx.includes('ghp_'));
@@ -90,35 +90,51 @@ test('stop -> end -> start round trip injects a recap', () => {
   assert.equal(r.stdout, '');
 });
 
-test('CLI search, show, recent and file work against the stored session', () => {
+test('CLI search, show, recent and touched work against the stored session', () => {
   let r = runCli(['--cwd', projectDir, 'login']);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /sess-1/);
+  assert.match(r.stdout, /session sess-1/);
+  assert.match(r.stdout, /asked: Thanks, also update the docs/);
 
   r = runCli(['--cwd', projectDir, 'recent', '--json']);
   const rows = JSON.parse(r.stdout);
-  assert.equal(rows.length, 1);
+  assert.equal(rows.length, 1, 'one segment: the whole session, nothing committed');
   assert.equal(rows[0].status, 'ended');
+  assert.equal(rows[0].commit_sha, null);
+  r = runCli(['--cwd', projectDir, 'recent', '--sessions']);
+  assert.match(r.stdout, /^sess-1 /);
 
   r = runCli(['show', 'sess-1']);
-  assert.match(r.stdout, /Prompts:/);
-  assert.match(r.stdout, /src\/auth\.ts \(edit/);
-  assert.match(r.stdout, /\[REDACTED\]/);
-  assert.doesNotMatch(r.stdout, /Tools:/);
+  assert.match(r.stdout, /Work \(1 segment, oldest first\):\n\nno commits recorded\n/);
+  assert.match(r.stdout, /asked: Fix the login bug in the auth module/);
+  assert.match(r.stdout, /files: src\/auth\.ts, test\/auth\.test\.ts/);
+  assert.doesNotMatch(r.stdout, /Tools:|\.env|Commands/);
+  r = runCli(['show', 'sess-1', '--json']);
+  assert.match(r.stdout, /\[REDACTED\]/, 'commands are kept, with secrets masked');
+  assert.ok(!r.stdout.includes('ghp_'));
 
-  r = runCli(['--all', 'file', 'auth.test']);
-  assert.match(r.stdout, /sess-1/);
+  for (const cmd of ['touched', 'file']) {
+    r = runCli(['--all', cmd, 'auth.test']);
+    assert.match(r.stdout, /session sess-1/);
+    assert.match(r.stdout, /write ×1: test\/auth\.test\.ts/);
+  }
 
   r = runCli(['--cwd', join(tmp, 'elsewhere-nonexistent'), 'login']);
-  assert.match(r.stdout, /No matching sessions/);
+  assert.match(r.stdout, /No matching work/);
   r = runCli(['--all', 'login']);
-  assert.match(r.stdout, /sess-1/);
+  assert.match(r.stdout, /session sess-1/);
+  r = runCli(['--all', 'recent', '--since', '1h']);
+  assert.match(r.stdout, /No matching work/, 'the sample session is from 2026-09-21');
+  r = runCli(['--all', 'recent', '--since', 'soon']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /--since expects/);
 });
 
-test('CLI forget removes the session', () => {
+test('CLI forget removes the session and its segments', () => {
   const r = runCli(['forget', 'sess-1']);
   assert.match(r.stdout, /Deleted 1/);
-  assert.match(runCli(['--all', 'recent']).stdout, /No matching sessions/);
+  assert.match(runCli(['--all', 'recent']).stdout, /No matching work/);
+  assert.match(runCli(['--all', 'login']).stdout, /No matching work/);
 });
 
 test('CLAUDE_MEM_LITE_ENABLED=false disables capture', () => {
@@ -157,7 +173,10 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   writeFileSync(transcript, toJsonl(commitSession({ cwd: repo })));
   const input = { session_id: 'sess-c', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' };
 
-  let r = runHook('session-stop.mjs', input, {}, dataDir);
+  // The fake .git is not a repository git itself can read: keep `git status`
+  // out of this test (a real repository is exercised separately).
+  const noStatus = { CLAUDE_MEM_LITE_GIT_STATUS: 'false' };
+  let r = runHook('session-stop.mjs', input, noStatus, dataDir);
   assert.equal(r.status, 0, r.stderr);
 
   const recap = () => {
@@ -166,8 +185,7 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
     return JSON.parse(res.stdout).hookSpecificOutput.additionalContext;
   };
   let ctx = recap();
-  assert.match(ctx, /1111111 feat: stage 0 skeleton/);
-  assert.match(ctx, /3333333 feat: stage 1 content model/);
+  assert.match(ctx, /- work, oldest first:\n {2}- 1111111 feat: stage 0 skeleton · 2 files[^\n]*\n {2}- 3333333 feat: stage 1 content model · 1 file[^\n]*\n {2}- uncommitted · 1 file: README\.md/);
   assert.match(ctx, /HEAD at end: 3333333 \(main\) · edited after last commit: README\.md/);
   assert.match(ctx, /docs changed: docs\/ARCHITECTURE\.md, README\.md/);
   assert.doesNotMatch(ctx, /tool calls/);
@@ -186,16 +204,49 @@ test('recap carries commits, HEAD at end and whether HEAD moved since', () => {
   // A commit typed in a terminal an hour later is on HEAD too, but not this session's.
   const terminal = writeLooseCommit(join(repo, '.git'), { parent: quiet, subject: 'chore: by hand', time: Date.parse(quietCall[1].timestamp) + 3600_000 });
   writeFileSync(join(repo, '.git', 'refs', 'heads', 'main'), `${terminal}\n`);
-  r = runHook('session-stop.mjs', input, {}, dataDir);
+  r = runHook('session-stop.mjs', input, noStatus, dataDir);
   assert.equal(r.status, 0, r.stderr);
   ctx = recap();
-  assert.match(ctx, new RegExp(`3333333 feat: stage 1 content model\\n {2}- ${quiet.slice(0, 7)} docs: quiet commit\\n`));
-  assert.doesNotMatch(ctx, /by hand/);
+  assert.match(ctx, new RegExp(`- 3333333 feat: stage 1 content model[^\\n]*\\n {2}- ${quiet.slice(0, 7)} docs: quiet commit · 1 file`));
+  assert.doesNotMatch(ctx, /by hand|uncommitted/);
   assert.match(ctx, new RegExp(`HEAD at end: ${terminal.slice(0, 7)} \\(main\\) · no edits after last commit`));
 
   r = runCli(['show', 'sess-c'], dataDir);
-  assert.match(r.stdout, new RegExp(`Commits:\\n {2}1111111 feat: stage 0 skeleton\\n {2}3333333 feat: stage 1 content model\\n {2}${quiet.slice(0, 7)} docs: quiet commit\\n`));
+  assert.match(r.stdout, /Work \(3 segments, oldest first\):/);
+  assert.match(r.stdout, new RegExp(`\\n1111111 feat: stage 0 skeleton\\n[^]*\\n3333333 feat: stage 1 content model\\n[^]*\\n${quiet.slice(0, 7)} docs: quiet commit\\n`));
+  assert.match(r.stdout, /files: README\.md/);
   assert.match(r.stdout, new RegExp(`HEAD at end: ${terminal.slice(0, 7)} \\(main\\)\\nEdited after last commit: none`));
+
+  // A commit sha leads straight to its segment.
+  r = runCli(['show', quiet.slice(0, 7)], dataDir);
+  assert.match(r.stdout, new RegExp(`^${quiet.slice(0, 7)} docs: quiet commit\\n`));
+  assert.match(r.stdout, /Part of session sess-c/);
+});
+
+test('a real repository: git status after the turn says clean or what is uncommitted', { skip: spawnSync('git', ['--version']).status !== 0 && 'git not installed' }, () => {
+  const dataDir = join(tmp, 'real-git');
+  const repo = join(tmp, 'real-repo');
+  mkdirSync(repo, { recursive: true });
+  const git = (...args) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repo, windowsHide: true });
+  git('init', '-q');
+  writeFileSync(join(repo, 'a.txt'), 'a');
+  git('add', 'a.txt');
+  git('commit', '-q', '-m', 'init');
+  const transcript = join(tmp, 'sess-g.jsonl');
+  writeFileSync(transcript, toJsonl([userPrompt('change a', { cwd: repo, sessionId: 'sess-g' }), assistantText('done', { cwd: repo, sessionId: 'sess-g' })]));
+  const input = { session_id: 'sess-g', transcript_path: transcript, cwd: repo, hook_event_name: 'Stop' };
+  const recap = () =>
+    JSON.parse(runHook('session-start.mjs', { ...input, session_id: 'next', hook_event_name: 'SessionStart' }, {}, dataDir).stdout).hookSpecificOutput.additionalContext;
+
+  runHook('session-stop.mjs', input, {}, dataDir);
+  assert.match(recap(), /HEAD at end: [0-9a-f]{7} \([^)]+\) · clean\n/);
+
+  writeFileSync(join(repo, 'a.txt'), 'changed outside the session');
+  writeFileSync(join(repo, '.env'), 'SECRET=1');
+  runHook('session-stop.mjs', input, {}, dataDir);
+  const ctx = recap();
+  assert.match(ctx, /· 2 uncommitted: a\.txt \(\+1 more\)\n/, 'the .env file is counted but never named');
+  assert.ok(!ctx.includes('.env'));
 });
 
 test('recap stays well-formed when prompts, answers and commits contain emoji', () => {

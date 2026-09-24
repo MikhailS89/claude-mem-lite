@@ -5,13 +5,21 @@
 //   sessions      one row per Claude Code session: short `summary` + JSON `details`
 //   session_files files touched per session, for "what touched X?" queries
 //   sessions_fts  FTS5 index over title + summary + a body of prompts/files/commands/commits
+//   segments      the units of work inside a session: one per commit, plus the
+//                 uncommitted tail (see segments.mjs)
+//   segment_files files edited per segment, for "when did we last touch X?"
+//   segments_fts  FTS5 index over a segment's commit subject, prompts and files
+//
+// Schema changes are additive (CREATE ... IF NOT EXISTS), so an old database
+// simply gains the new tables; rows written before them are re-indexed from
+// their transcripts by reindex.mjs.
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { dbPath as defaultDbPath } from './config.mjs';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -50,6 +58,37 @@ CREATE TABLE IF NOT EXISTS session_files (
   PRIMARY KEY (session_id, path)
 );
 CREATE INDEX IF NOT EXISTS session_files_path ON session_files(path);
+CREATE TABLE IF NOT EXISTS segments (
+  session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq            INTEGER NOT NULL,
+  project_id     TEXT NOT NULL,
+  started_at     TEXT,
+  ended_at       TEXT,
+  active_min     INTEGER NOT NULL DEFAULT 0,
+  commit_sha     TEXT,
+  commit_subject TEXT,
+  prompts        TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS segments_project_ended ON segments(project_id, ended_at DESC);
+CREATE INDEX IF NOT EXISTS segments_commit ON segments(commit_sha);
+CREATE TABLE IF NOT EXISTS segment_files (
+  session_id TEXT NOT NULL,
+  seq        INTEGER NOT NULL,
+  path       TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  ops        INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (session_id, seq, path),
+  FOREIGN KEY (session_id, seq) REFERENCES segments(session_id, seq) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS segment_files_path ON segment_files(path);
+CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
+  session_id UNINDEXED,
+  seq UNINDEXED,
+  subject,
+  body,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
   session_id UNINDEXED,
   title,
@@ -68,9 +107,18 @@ export class MemoryDb {
     this.db.exec('PRAGMA busy_timeout = 3000');
     this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec(SCHEMA);
-    this.db
-      .prepare('INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)')
-      .run('schema_version', String(SCHEMA_VERSION));
+    this.db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
+      'schema_version',
+      String(SCHEMA_VERSION),
+    );
+  }
+
+  getMeta(key) {
+    return this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key)?.value ?? null;
+  }
+
+  setMeta(key, value) {
+    this.db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
   }
 
   close() {
@@ -104,7 +152,8 @@ export class MemoryDb {
    * Idempotent: the Stop hook calls this after every turn.
    */
   upsertSession(row, files) {
-    const now = new Date().toISOString();
+    // `updatedAt` lets re-indexing keep a row's place in "most recent" order.
+    const now = row.updatedAt ?? new Date().toISOString();
     const details = typeof row.details === 'string' ? row.details : JSON.stringify(row.details ?? {});
     const body = fulltextBody(row.details, files);
     const tx = this.db;
@@ -145,11 +194,106 @@ export class MemoryDb {
         row.summary,
         body,
       );
+      this.#writeSegments(row.id, row.projectId, parsedDetails(row.details).segments ?? []);
       tx.exec('COMMIT');
     } catch (err) {
       tx.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  /** Replace a session's segments (inside the caller's transaction). */
+  #writeSegments(sessionId, projectId, segments) {
+    const db = this.db;
+    db.prepare('DELETE FROM segments_fts WHERE session_id = ?').run(sessionId);
+    db.prepare('DELETE FROM segment_files WHERE session_id = ?').run(sessionId);
+    db.prepare('DELETE FROM segments WHERE session_id = ?').run(sessionId);
+    const insSeg = db.prepare(
+      `INSERT INTO segments(session_id, seq, project_id, started_at, ended_at, active_min, commit_sha, commit_subject, prompts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insFile = db.prepare('INSERT OR REPLACE INTO segment_files(session_id, seq, path, kind, ops) VALUES (?, ?, ?, ?, ?)');
+    const insFts = db.prepare('INSERT INTO segments_fts(session_id, seq, subject, body) VALUES (?, ?, ?, ?)');
+    for (const s of segments) {
+      insSeg.run(
+        sessionId,
+        s.seq,
+        projectId,
+        s.startedAt ?? null,
+        s.endedAt ?? null,
+        s.activeMin ?? 0,
+        s.commit?.sha ?? null,
+        s.commit?.subject ?? null,
+        JSON.stringify(s.prompts ?? []),
+      );
+      for (const f of s.files ?? []) insFile.run(sessionId, s.seq, f.path, f.kind, f.ops ?? 1);
+      insFts.run(sessionId, s.seq, s.commit?.subject ?? '', [...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path)].join('\n'));
+    }
+  }
+
+  /** Segments of one session in order, with their files. */
+  sessionSegments(sessionId) {
+    return this.#withFiles(this.db.prepare(`${SEGMENT_SELECT} WHERE g.session_id = ? ORDER BY g.seq`).all(sessionId));
+  }
+
+  /**
+   * Most recent segments across sessions: the unit `recent` lists.
+   * @param {{projectId?:string|null, limit?:number, since?:string|null, excludeSessionId?:string|null}} [opts]
+   */
+  recentSegments({ projectId = null, limit = 10, since = null, excludeSessionId = null } = {}) {
+    const { where, params } = segmentFilters({ projectId, since, excludeSessionId });
+    const sql = `${SEGMENT_SELECT} ${where} ORDER BY g.ended_at DESC, g.seq DESC LIMIT ?`;
+    return this.#withFiles(this.db.prepare(sql).all(...params, limit));
+  }
+
+  /**
+   * Segments that edited a file matching `fragment`, newest first: "when did
+   * we last touch X, and what came of it". Each row carries `matched` paths.
+   */
+  touched(fragment, { projectId = null, limit = 10, since = null } = {}) {
+    const like = `%${String(fragment).replace(/\\/g, '/')}%`;
+    const { where, params } = segmentFilters({ projectId, since }, ['EXISTS (SELECT 1 FROM segment_files f WHERE f.session_id = g.session_id AND f.seq = g.seq AND f.path LIKE ? COLLATE NOCASE)']);
+    const rows = this.#withFiles(this.db.prepare(`${SEGMENT_SELECT} ${where} ORDER BY g.ended_at DESC, g.seq DESC LIMIT ?`).all(like, ...params, limit));
+    const re = new RegExp(escapeRegExp(String(fragment).replace(/\\/g, '/')), 'i');
+    for (const r of rows) r.matched = r.files.filter((f) => re.test(f.path));
+    return rows;
+  }
+
+  /** Full-text search over segments (commit subject weighs most). */
+  searchSegments(query, { projectId = null, limit = 10, since = null } = {}) {
+    const terms = ftsTerms(query);
+    if (!terms.length) return [];
+    const run = (match) => {
+      const { where, params } = segmentFilters({ projectId, since }, ['segments_fts MATCH ?']);
+      return this.#withFiles(
+        this.db
+          .prepare(
+            `SELECT g.*, s.branch, s.title, s.status, s.updated_at, bm25(segments_fts, 0, 0, 10.0, 1.0) AS rank
+             FROM segments_fts JOIN segments g ON g.session_id = segments_fts.session_id AND g.seq = segments_fts.seq
+             JOIN sessions s ON s.id = g.session_id ${where} ORDER BY rank LIMIT ?`,
+          )
+          .all(match, ...params, limit),
+      );
+    };
+    const strict = run(terms.join(' AND '));
+    if (strict.length || terms.length === 1) return strict;
+    return run(terms.join(' OR '));
+  }
+
+  /** The segment that ends with a commit whose sha starts with `prefix`. */
+  segmentByCommit(prefix) {
+    if (!/^[0-9a-f]{4,64}$/i.test(prefix)) return null;
+    const row = this.db.prepare(`${SEGMENT_SELECT} WHERE g.commit_sha LIKE ? ORDER BY g.ended_at DESC LIMIT 1`).get(`${prefix.toLowerCase()}%`);
+    return row ? this.#withFiles([row])[0] : null;
+  }
+
+  #withFiles(rows) {
+    const q = this.db.prepare('SELECT path, kind, ops FROM segment_files WHERE session_id = ? AND seq = ? ORDER BY path');
+    for (const r of rows) {
+      r.files = q.all(r.session_id, r.seq);
+      r.prompts = safeJson(r.prompts) ?? [];
+    }
+    return rows;
   }
 
   getSession(idOrPrefix) {
@@ -165,9 +309,13 @@ export class MemoryDb {
   }
 
   /** Most recent sessions, optionally scoped to a project and excluding one id. */
-  recentSessions({ projectId = null, limit = 5, excludeId = null } = {}) {
+  recentSessions({ projectId = null, limit = 5, excludeId = null, since = null } = {}) {
     const where = [];
     const params = [];
+    if (since) {
+      where.push('updated_at >= ?');
+      params.push(since);
+    }
     if (projectId) {
       where.push('project_id = ?');
       params.push(projectId);
@@ -180,6 +328,19 @@ export class MemoryDb {
     return this.db.prepare(sql).all(...params, limit);
   }
 
+  /**
+   * Sessions whose details predate `format` (written by an older version,
+   * before segments existed): candidates for re-indexing.
+   */
+  sessionsOlderThan(format, limit = 1000) {
+    return this.db
+      .prepare(
+        `SELECT id, project_id, cwd, status, end_reason, updated_at FROM sessions
+         WHERE COALESCE(json_extract(details, '$.format'), 0) < ? ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(format, limit);
+  }
+
   countSessions(projectId = null) {
     return projectId
       ? this.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(projectId).n
@@ -190,7 +351,7 @@ export class MemoryDb {
    * Full-text search. Terms are AND-ed with prefix matching; when that yields
    * nothing we retry with OR so a partially-wrong query still returns something.
    */
-  search(query, { projectId = null, limit = 10 } = {}) {
+  search(query, { projectId = null, limit = 10, since = null } = {}) {
     const terms = ftsTerms(query);
     if (!terms.length) return [];
     const run = (match) => {
@@ -199,6 +360,10 @@ export class MemoryDb {
       if (projectId) {
         where.push('s.project_id = ?');
         params.push(projectId);
+      }
+      if (since) {
+        where.push('s.updated_at >= ?');
+        params.push(since);
       }
       return this.db
         .prepare(
@@ -214,12 +379,16 @@ export class MemoryDb {
   }
 
   /** Sessions whose recorded files contain `fragment` (case-insensitive substring). */
-  searchByFile(fragment, { projectId = null, limit = 10 } = {}) {
+  searchByFile(fragment, { projectId = null, limit = 10, since = null } = {}) {
     const params = [`%${fragment.replace(/\\/g, '/')}%`];
     let sql = `SELECT DISTINCT s.* FROM session_files f JOIN sessions s ON s.id = f.session_id WHERE f.path LIKE ? COLLATE NOCASE`;
     if (projectId) {
       sql += ' AND s.project_id = ?';
       params.push(projectId);
+    }
+    if (since) {
+      sql += ' AND s.updated_at >= ?';
+      params.push(since);
     }
     sql += ' ORDER BY s.updated_at DESC LIMIT ?';
     return this.db.prepare(sql).all(...params, limit);
@@ -229,6 +398,7 @@ export class MemoryDb {
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM segments_fts WHERE session_id = ?').run(id);
       const r = this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
       this.db.exec('COMMIT');
       return r.changes;
@@ -242,6 +412,7 @@ export class MemoryDb {
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM sessions_fts WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)').run(projectId);
+      this.db.prepare('DELETE FROM segments_fts WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)').run(projectId);
       const r = this.db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
       this.db.exec('COMMIT');
       return r.changes;
@@ -250,6 +421,35 @@ export class MemoryDb {
       throw err;
     }
   }
+}
+
+/** Segment rows joined with the session fields every listing shows. */
+const SEGMENT_SELECT = `SELECT g.*, s.branch, s.title, s.status, s.updated_at FROM segments g JOIN sessions s ON s.id = g.session_id`;
+
+function segmentFilters({ projectId = null, since = null, excludeSessionId = null }, extra = []) {
+  const where = [...extra];
+  const params = [];
+  if (projectId) {
+    where.push('g.project_id = ?');
+    params.push(projectId);
+  }
+  if (since) {
+    where.push('g.ended_at >= ?');
+    params.push(since);
+  }
+  if (excludeSessionId) {
+    where.push('g.session_id != ?');
+    params.push(excludeSessionId);
+  }
+  return { where: where.length ? 'WHERE ' + where.join(' AND ') : '', params };
+}
+
+function parsedDetails(details) {
+  return typeof details === 'string' ? safeJson(details) : details ?? {};
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Text that goes into the FTS `body` column. */

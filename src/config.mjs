@@ -30,6 +30,12 @@ export const enabled = boolEnv('CLAUDE_MEM_LITE_ENABLED', true);
 /** Verbose logging to hooks.log (errors are always logged). */
 export const debug = boolEnv('CLAUDE_MEM_LITE_DEBUG', false);
 
+/**
+ * Run `git status` after each turn to record uncommitted changes (the only
+ * git process the plugin starts). Turn off for repositories where it is slow.
+ */
+export const gitStatus = boolEnv('CLAUDE_MEM_LITE_GIT_STATUS', true);
+
 /** How many recent sessions SessionStart injects. */
 export const recallSessions = intEnv('CLAUDE_MEM_LITE_RECALL_SESSIONS', 5);
 

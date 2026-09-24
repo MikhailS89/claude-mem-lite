@@ -3,16 +3,19 @@
 Local, offline, auditable session memory for [Claude Code](https://code.claude.com).
 
 At the end of every assistant turn the plugin compresses the current session's
-transcript into a short record (the commits it made, where HEAD was when it
-ended, which files and docs were edited, what you asked last) and stores it in
-a SQLite file on your machine.
+transcript into a short record and stores it in a SQLite file on your machine.
+A session is split into **segments, one per commit**: the commit, the files it
+changed, the prompts behind it and how long it took. Around them it keeps the
+state the work was left in (HEAD, anything uncommitted), which docs changed,
+and which files did not settle (created and deleted again, or revisited after
+moving on).
 When you start a new session in the same project, a compact recap of the last
 few sessions is injected into Claude's context, and a `mem-search` skill lets
-Claude (or you) dig up older sessions on demand.
+Claude (or you) ask "when did we last touch this file, and what came of it?".
 
 Inspired by [claude-mem](https://github.com/thedotmack/claude-mem), rebuilt from
 scratch with a much smaller surface: **no network calls, no accounts, no
-daemons, no native modules, no dependencies.** About 1 800 lines of plain,
+daemons, no native modules, no dependencies.** About 2 700 lines of plain,
 commented JavaScript you can audit in one sitting.
 
 ## Requirements
@@ -41,7 +44,10 @@ Restart Claude Code (or the VS Code extension). Confirm with `claude plugin list
 — it prints the path it loaded the plugin from and `Status: ✔ loaded`. Update
 later with `git -C ~/.claude/skills/claude-mem-lite pull`, then restart Claude
 Code and check the `Version:` line in `claude plugin list`. Updates keep the
-database; sessions recorded before an update keep their old recap format.
+database; after an upgrade to 0.3 older sessions are rebuilt in the new format
+from their transcripts, a few per turn, as long as Claude Code still has the
+transcript (it keeps them for 30 days by default). The rest stay as
+`legacy record`s.
 
 **Option B — try it for one session** without installing:
 
@@ -60,68 +66,87 @@ plugin on your machine before enabling it.
 **On `SessionStart`** (new session, `/clear`, or after `/compact`) Claude receives something like:
 
 ```
-# claude-mem-lite: previous sessions in this project (shopkit)
-12 sessions stored locally. Newest first. For details or to search older work use the `mem-search` skill.
-### 2026-09-21 17:59 · main · Архитектура E-commerce проекта
-- commits:
-  - a1c93f0 chore: stage 0 skeleton (pnpm workspace, docker)
-  - b886776 docs: fix caching decision in CONTEXT.md
-- HEAD at end: b886776 (main), now c02d4e1 · edited after last commit: shopkit-core/composer.json
-- docs changed: AGENTS.md, CLAUDE.md, CONTEXT.md
-- edited: shopkit-core/composer.json, shopkit-core/src/Cache.php (+14 more)
-- last request: Понял, давай зафиксируем кэш
-- session: ac6ab616
+# claude-mem-lite: previous sessions in this project (ApexFit)
+2 sessions stored locally. Newest first; a segment is the work up to one commit. ...
+### 2026-09-22 16:04 · master · Маркетплейс для тренировок
+- HEAD at end: e6b5545 (master), now 4443af4 · clean
+- work (last 6 of 16 segments), oldest first:
+  - a6ab2e4 Этап 3: проверка страниц каталога, две правки · 3 files · 10 min
+  - 35c640c Этап 3 завершён: детальные страницы и SEO · 8 files · 18 min
+  - efcceb5 Этап 4: права как код, API аккаунта, 152-ФЗ · 7 files · 15 min
+  - 9a596d8 Этап 4: роль пользователя следует за статусом верификации · 5 files · 10 min
+  - f885af2 Этап 4: страницы входа, регистрации, онбординга · 12 files · 8 min
+  - e6b5545 Документация: синхронизация с этапом 4 · 2 files · 1 min
+- docs changed: docs/ARCHITECTURE.md, docs/ROADMAP.md, README.md
+- revisited after moving on: backend/scripts/lib/exercise-names.cjs (21 edits in 3 segments)
+- last request: Спасибо за помощь
+- session: 4b9aabea
+
+### 2026-09-22 16:25 · master · …
+- work (last 2 of 4 segments), oldest first:
+  …
 ```
 
-Five sessions, at most ~4 000 characters (~1 000 tokens). That is the whole
-per-session cost of the plugin.
+Five sessions, at most ~4 000 characters (~1 000 tokens); the newest in
+detail, the older ones in two segments each. That is the whole per-session
+cost of the plugin.
 
 The recap describes where the work was left, not how busy the session was:
 
-- **commits** are the ones this session made. They come from two places,
-  merged: `git commit` output in the transcript (amended commits replace the
-  original, failed ones are skipped, commits made in another repository are
-  dropped), and commits on HEAD read from `.git/objects`, which catches
-  `git commit -q` and output hidden behind `git log`. A commit from `.git`
-  counts only if it was made while one of the session's own committing git
-  commands was running, so commits from a parallel session on the same branch
-  or typed in a terminal are not attributed to it (they still show up as
-  HEAD having moved). The recap lists the last 8.
 - **HEAD at end** is read from `.git` when the session last saved; for the
-  newest session the recap adds `now <sha>` if HEAD has moved since.
-- **edited after last commit** lists Claude's own edits to project files after
-  its last commit in that session. Edits you made outside the session are
-  invisible to the plugin, so it never claims the working tree is clean.
-- **docs changed** (`docs/`, `*.md`, `*.rst`… inside the project) is listed
-  before other files: a doc edit usually records a decision, and the doc is
-  where to read it. Files outside the repository (notes under `~/`, other
-  repos) only appear at the end of `edited`.
-- Sessions without commits (a review, a discussion) show `ran:` and a cleaned-up
-  `outcome:` (Claude's last message cut at a sentence boundary) instead.
+  newest session the recap adds `now <sha>` if HEAD has moved since. Next to
+  it, `git status` from the same moment: `clean`, or `3 uncommitted: a, b, c`
+  (including changes made outside the session; secrets like `.env` are counted
+  but never named).
+- **work** lists segments, one per commit, oldest first: the subject, how many
+  project files it changed, and minutes of *active* work (pauses longer than
+  10 minutes - a break, the night - are left out). What was changed after the
+  last commit is an `uncommitted` segment with its files. A session in which no
+  commit was found says `no commits recorded` and claims nothing more.
+- **Commits** are the ones this session made: `git commit` output in the
+  transcript (amends replace the original, failed commits are skipped, commits
+  in another repository are dropped), plus commits read from `.git/objects`
+  that were made while one of the session's own committing git commands ran
+  (this catches `git commit -q`; commits from a parallel session or typed in
+  a terminal are not attributed).
+- **docs changed** (`docs/`, `*.md`, `*.rst`… inside the project): a doc edit
+  usually records a decision, and the doc is where to read it.
+- **undone** (certain) - files created in the session and deleted again, or
+  whose edits were thrown away (`git restore`, `git checkout --`,
+  `git reset --hard`). **revisited after moving on** (a hint) - code files
+  returned to after other code work, with edit and segment counts. Docs, temp
+  files and files that merely grow commit by commit are not flagged. Shown for
+  the newest session only.
+- Sessions without commits (a review, a discussion) also show a cleaned-up
+  `outcome:` (Claude's last message cut at a sentence boundary).
 
-**`/claude-mem-lite:mem-search <words>`** — Claude searches the database
-(full-text over titles, prompts, file paths, commands, commit messages and
-outcomes), picks the relevant sessions and, only if needed, pulls the full
-details of one of them.
-This is the "progressive disclosure" idea from the original: a cheap index
-first, expensive details only on request.
+**`/claude-mem-lite:mem-search <words>`** — the skill Claude uses to look
+further back: `touched <file>` (when was it last changed, in which commit, and
+did that work hold), full-text search over commit subjects, prompts and paths,
+and `show` for one session or one commit. This is the "progressive
+disclosure" idea from the original: a cheap index first, details on request.
 
 **CLI** for the same thing from a terminal:
 
 ```bash
-node scripts/search.mjs login bug            # search current project
-node scripts/search.mjs --all "docker nginx" # search every project
-node scripts/search.mjs recent --limit 20
-node scripts/search.mjs show ac6ab616        # full details (id prefix is enough)
-node scripts/search.mjs file auth.ts         # sessions that touched a file
+node scripts/search.mjs touched exercise-names   # when did we last change it, and what came of it
+node scripts/search.mjs login bug                # search the current project
+node scripts/search.mjs --all "docker nginx"     # search every project
+node scripts/search.mjs recent --since 7d        # newest segments (--sessions: whole sessions)
+node scripts/search.mjs show ac6ab616            # a session with all its segments
+node scripts/search.mjs show e6b5545             # the segment of one commit
 node scripts/search.mjs projects
-node scripts/search.mjs forget ac6ab616      # delete one session
+node scripts/search.mjs forget ac6ab616          # delete one session
 node scripts/search.mjs forget-project git:github.com/me/repo
-node scripts/search.mjs where                # db path + how the current project is identified
+node scripts/search.mjs where                    # db path + how the current project is identified
+node scripts/search.mjs reindex                  # rebuild old-format sessions from transcripts now
 node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
-                                             # dry run: what the hooks would store and recall
-                                             # for a transcript, plus sanity checks; writes nothing
+                                                 # dry run: what the hooks would store and recall
+                                                 # for a transcript, plus sanity checks; writes nothing
 ```
+
+`--since` takes `24h`, `7d`, `2w` or a date (`2026-09-01`) and works with
+`recent`, `touched` and search.
 
 ## What is stored, and where
 
@@ -138,14 +163,16 @@ Per session:
 | commands | `Bash` command lines | last 40, 200 chars each |
 | search patterns | `Grep`/`Glob` patterns | 20 |
 | commits | `[branch sha] subject` lines printed by `git` commands in the session, plus commits on HEAD made during the session's own committing git calls (from `.git`) | last 30, 120 chars each |
-| git state | HEAD branch and sha when the session last saved; files edited after the last commit | |
+| segments | per commit: subject, files edited in that window, the prompts in it, active minutes | 60 files, 10 prompts each |
+| rework | files undone (created then deleted, edits discarded) or revisited after moving on | |
+| git state | HEAD branch and sha when the session last saved; `git status` at that moment (count + up to 10 paths, secrets only counted); files edited after the last commit | |
 | outcome | first 600 chars of Claude's final message | 600 chars |
 | stats | prompt count, tool call count, tools used, duration, branch | |
 
 **Not stored:** file contents, tool outputs, diffs (`old_string`/`new_string`),
-Claude's thinking, subagent activity. The only thing taken from tool results
-is the commit line above: output of `Bash` calls that ran `git` is scanned for
-it in memory and discarded.
+Claude's thinking, subagent activity. From tool results the plugin takes only
+whether a call failed, when it finished, and the commit line above (output of
+`Bash` calls that ran `git` is scanned for it in memory and discarded).
 
 Projects are identified by the normalised git `origin` URL
 (`git:github.com/owner/repo`, so ssh and https clones share memory), falling
@@ -190,6 +217,19 @@ the transcript file, so the plugin simply re-reads that file after each turn
 a process on every tool call. `Stop` and `SessionEnd` run the same idempotent
 code; the only difference is that `SessionEnd` marks the session as ended.
 
+Everything about git is read straight from the files under `.git` (HEAD,
+refs, loose commit objects, pack indexes) with one exception: `git status`,
+because telling a modified file from an unmodified one means comparing the
+index with the working tree. It runs only in the background `Stop` /
+`SessionEnd` hooks, with a 3-second timeout, without taking optional locks
+(`GIT_OPTIONAL_LOCKS=0`, so it cannot collide with your own git commands);
+if git is missing or slow the recap simply has no worktree state. Set
+`CLAUDE_MEM_LITE_GIT_STATUS=false` to turn it off.
+
+After an upgrade that changes the record format, `Stop` also rebuilds up to 5
+older sessions per turn from their transcripts until none are left
+(`search.mjs reindex` does it in one go).
+
 Hooks use the exec form (`node` + args, no shell), so paths with spaces and
 Windows backslashes are not a problem. Every hook exits 0 no matter what
 happens; failures are written to `~/.claude-mem-lite/hooks.log`.
@@ -204,11 +244,14 @@ scripts/search.mjs           CLI
 src/config.mjs               env-driven settings
 src/hook-io.mjs              stdin JSON in, JSON out, never fail
 src/project.mjs              project identity, HEAD and recent commits, read from .git (no git spawn)
+src/worktree.mjs             `git status` (the one git process), bounded and lock-free
 src/transcript.mjs           .jsonl parser
-src/privacy.mjs              <private>, sensitive paths, secret redaction
+src/privacy.mjs              <private>, sensitive paths, secret redaction, surrogate-safe text
 src/summarize.mjs            heuristic compression
-src/db.mjs                   node:sqlite schema, FTS5 search
+src/segments.mjs             segments between commits, active time, undone/revisited files
+src/db.mjs                   node:sqlite schema, FTS5 search over sessions and segments
 src/capture.mjs              Stop/SessionEnd body
+src/reindex.mjs              rebuild rows written by older versions from transcripts
 src/recall.mjs               SessionStart recap
 skills/mem-search/SKILL.md   the skill
 test/                        node:test suite (npm test)
@@ -220,6 +263,7 @@ test/                        node:test suite (npm test)
 |---|---|---|
 | `CLAUDE_MEM_LITE_ENABLED` | `true` | `false` disables all hooks |
 | `CLAUDE_MEM_LITE_DIR` | `~/.claude-mem-lite` | where `memory.db` and `hooks.log` live |
+| `CLAUDE_MEM_LITE_GIT_STATUS` | `true` | `false` skips `git status` after each turn (for huge repositories) |
 | `CLAUDE_MEM_LITE_RECALL_SESSIONS` | `5` | sessions in the SessionStart recap |
 | `CLAUDE_MEM_LITE_CONTEXT_CHARS` | `4000` | hard cap on the recap size (at most 9000) |
 | `CLAUDE_MEM_LITE_MAX_PROMPTS` / `_PROMPT_CHARS` | `30` / `400` | prompts kept per session |
@@ -235,10 +279,12 @@ Set them in your shell profile or in Claude Code's `settings.json` under `"env"`
 See [IDEAS.md](IDEAS.md) for what could be done about these and what else is on
 the list.
 
-- Summaries are heuristic (no LLM): a list of files and commands plus your
-  last request and Claude's last message. Good enough to answer "what was I
-  doing here?", not a narrative. An optional LLM summariser is a possible
-  later stage, off by default.
+- Summaries are heuristic (no LLM): commits, files, prompts and state, not
+  *why* something was done. "Revisited after moving on" cannot tell rework
+  from a file that simply grows with each feature; it is a pointer, with
+  counts. An optional per-segment LLM summary is the next planned stage.
+- Commits already packed by `git gc` cannot be read from `.git`; the recap then
+  relies on what `git commit` printed in the transcript.
 - In `claude -p` (print) mode `SessionEnd` does not fire; the session is still
   captured by `Stop`, it just isn't marked as ended.
 - Subagent (sidechain) activity is not recorded.
@@ -274,7 +320,8 @@ created a `.claude-mem-lite/disabled` marker yourself).
 ## Development
 
 ```bash
-npm test                       # 39 tests, ~3 s, no network
+npm test                       # ~100 tests, a few seconds, no network
+node scripts/search.mjs replay <transcript.jsonl>   # check a change against real sessions
 claude plugin validate .       # manifest check
 CLAUDE_MEM_LITE_DIR=/tmp/mem CLAUDE_MEM_LITE_DEBUG=1 claude --plugin-dir . -p "hello"
 ```
@@ -284,10 +331,12 @@ CLAUDE_MEM_LITE_DIR=/tmp/mem CLAUDE_MEM_LITE_DEBUG=1 claude --plugin-dir . -p "h
 Пошаговая инструкция по установке и использованию: [INSTALL.ru.md](INSTALL.ru.md).
 
 Локальная память для Claude Code: после каждого хода ассистента плагин
-сжимает транскрипт сессии (ваши запросы, изменённые файлы, команды, итог) в
-одну запись в SQLite на вашей машине, а при старте новой сессии в том же
-проекте подмешивает краткую сводку последних сессий (~1000 токенов). Skill
-`/claude-mem-lite:mem-search <слова>` ищет по старым сессиям.
+раскладывает сессию на отрезки по коммитам (коммит, его файлы, запросы,
+время работы) и запоминает, в каком виде оставлен проект (HEAD, незакоммиченное),
+какие документы менялись и что переделывалось. При старте новой сессии в том
+же проекте Claude получает краткую сводку (~1000 токенов), а skill
+`/claude-mem-lite:mem-search` отвечает на «когда мы в последний раз трогали
+этот файл и чем кончилось».
 
 Безопасность: ничего не уходит в сеть, нет аккаунтов, демонов и нативных
 модулей; содержимое файлов и вывод инструментов не сохраняются; пути к

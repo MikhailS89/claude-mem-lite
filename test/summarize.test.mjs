@@ -178,3 +178,19 @@ test('briefText drops markup and cuts at a sentence boundary', () => {
   assert.equal(briefText('no sentence boundary at all in this long text', 20), 'no sentence…');
   assert.ok(briefText('x'.repeat(50), 20).length <= 20);
 });
+
+test('a failed Edit changes nothing and is not counted', () => {
+  const t = parseTranscript(toJsonl(sampleSession()));
+  for (const u of t.toolUses) if (u.name === 'Edit') u.isError = true;
+  const r = summarize(t, project);
+  assert.deepEqual(r.details.filesEdited, ['test/auth.test.ts'], 'src/auth.ts was only read, its edit failed');
+});
+
+test('summarize stores segments, rework and the details format', () => {
+  const r = summarize(parseTranscript(toJsonl(commitSession())), project, { worktree: { clean: true, count: 0, paths: [], hidden: 0 } });
+  assert.equal(r.details.format, 3);
+  assert.deepEqual(r.details.segments.map((g) => g.commit?.sha ?? 'open'), ['1111111', '3333333', 'open']);
+  assert.deepEqual(r.details.segments[2].files.map((f) => f.path), ['README.md'], '.env never appears');
+  assert.deepEqual(r.details.git.worktree, { clean: true, count: 0, paths: [], hidden: 0 });
+  assert.deepEqual(r.details.rework, []);
+});

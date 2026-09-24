@@ -2,8 +2,9 @@
 //
 // One JSON object per line. Records we care about:
 //   type=user      message.content = [{type:"text"}]      -> a human prompt
-//                  message.content = [{type:"tool_result"}] -> tool output (kept for Bash only,
-//                                                               to find the commits a session made)
+//                  message.content = [{type:"tool_result"}] -> when each call finished and whether
+//                                                               it failed; the output itself is kept
+//                                                               for Bash only (to find commits)
 //   type=assistant message.content = [{type:"text"|"tool_use"|"thinking"}]
 //   type=ai-title  aiTitle                                -> session title
 // Records flagged `isSidechain` belong to subagents and are skipped; `isMeta`
@@ -13,6 +14,9 @@ import { readFileSync } from 'node:fs';
 
 /** Text blocks Claude Code injects into user turns that are not the user's words. */
 const INJECTED_BLOCK = /^\s*<(system-reminder|ide_opened_file|ide_selection|ide_diagnostics|local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|task-notification|user-prompt-submit-hook|antml:document|document)\b/i;
+
+/** Notes Claude Code writes as a user turn: "[Request interrupted by user]" and the like. */
+const INJECTED_NOTE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/i;
 
 /** Tools that identify a file in their input. `kind` is what we record. */
 const FILE_TOOLS = {
@@ -33,8 +37,8 @@ const FILE_TOOLS = {
  * @property {string|null} endedAt     ISO timestamp of the last record
  * @property {{ts:string, text:string}[]} prompts
  * @property {{ts:string, id:string|null, name:string, input:object, result?:string, isError?:boolean, resultTs?:string|null}[]} toolUses
- *           `result` is the (truncated) output of a Bash call and `resultTs` when it arrived,
- *           when the transcript has them
+ *           `resultTs` is when the call's result arrived and `isError` whether it failed;
+ *           `result` is the (truncated) output, kept for Bash calls only
  * @property {{ts:string, text:string}[]} assistantTexts  final text of each assistant turn
  * @property {number} lines  number of lines successfully parsed
  */
@@ -59,8 +63,8 @@ export function parseTranscript(text) {
     lines: 0,
   };
 
-  /** tool_use id -> Bash tool use still waiting for its result */
-  const pendingBash = new Map();
+  /** tool_use id -> tool use still waiting for its result */
+  const pending = new Map();
 
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -92,7 +96,7 @@ export function parseTranscript(text) {
     const content = rec.message?.content;
     if (rec.type === 'user') {
       if (rec.isMeta) continue;
-      attachResults(content, pendingBash, rec.timestamp ?? null);
+      attachResults(content, pending, rec.timestamp ?? null);
       const prompt = extractPrompt(content);
       if (prompt) out.prompts.push({ ts: rec.timestamp ?? '', text: prompt });
       continue;
@@ -104,7 +108,7 @@ export function parseTranscript(text) {
       if (block?.type === 'tool_use' && typeof block.name === 'string') {
         const use = { ts: rec.timestamp ?? '', id: block.id ?? null, name: block.name, input: block.input ?? {} };
         out.toolUses.push(use);
-        if (use.name === 'Bash' && use.id) pendingBash.set(use.id, use);
+        if (use.id) pending.set(use.id, use);
       } else if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
         out.assistantTexts.push({ ts: rec.timestamp ?? '', text: block.text.trim() });
       }
@@ -123,6 +127,10 @@ function attachResults(content, pending, ts) {
     const use = pending.get(block.tool_use_id);
     if (!use) continue;
     pending.delete(block.tool_use_id);
+    use.isError = block.is_error === true;
+    use.resultTs = ts; // when the call finished: together with `ts`, the window it ran in
+    // Only Bash output is kept (commit lines); other tools' output is never needed.
+    if (use.name !== 'Bash') continue;
     const text =
       typeof block.content === 'string'
         ? block.content
@@ -130,21 +138,19 @@ function attachResults(content, pending, ts) {
           ? block.content.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n')
           : '';
     use.result = text.slice(0, RESULT_CHARS);
-    use.isError = block.is_error === true;
-    use.resultTs = ts; // when the command finished: together with `ts`, the window it ran in
   }
 }
 
 /** Join the user's own text blocks, ignoring everything Claude Code injected. */
 function extractPrompt(content) {
   if (typeof content === 'string') {
-    return INJECTED_BLOCK.test(content) ? '' : content.trim();
+    return INJECTED_BLOCK.test(content) || INJECTED_NOTE.test(content) ? '' : content.trim();
   }
   if (!Array.isArray(content)) return '';
   const parts = [];
   for (const block of content) {
     if (block?.type !== 'text' || typeof block.text !== 'string') continue;
-    if (INJECTED_BLOCK.test(block.text)) continue;
+    if (INJECTED_BLOCK.test(block.text) || INJECTED_NOTE.test(block.text)) continue;
     const t = block.text.trim();
     if (t) parts.push(t);
   }

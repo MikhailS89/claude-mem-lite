@@ -75,14 +75,21 @@ itself is unreliable. Fix: on capture, mark any *other* `active` session of the
 same project older than N hours as `ended` — a session that has not been
 written to in hours is over.
 
-### 1.6 One record per session, not per unit of work
+### 1.6 Segments, and what "revisited" can and cannot tell
 
-A long session that goes through several stages is still one recap entry.
-Since 0.2.0 the entry lists the session's commits, which already reads as
-"stage 0: skeleton · stage 1: content model", so splitting the record itself
-by commits was deliberately not done: the session row is upserted by id after
-every turn, and splitting would change the data model for little extra value.
-Revisit only if sessions with 20+ commits turn out to be common.
+Done in 0.3.0, reversing the earlier call to keep one record per session: a
+real two-day session with 16 commits and 90 files showed that a list of
+commits without the files per commit does not answer "what happened around
+stage 2". Sessions now hold segments (one per commit) in their own table.
+
+Rework detection stays a heuristic. "Undone" (created then deleted, edits
+discarded) is certain. "Revisited after moving on" cannot tell a decision
+that did not settle from a core file that grows with every feature; the
+first version flagged 8 files in this repository's own development session,
+and ignoring docs-only commits as gaps brought it to 4, all of them genuine
+returns but only one real rework. It is shown with counts, for the newest
+session only. Telling the two apart needs the *why* - an LLM summary per
+segment (§2.1) is the way to get it.
 
 The feedback that led to 0.2.0 also warned against two tempting additions,
 and both still stand: no "record a decision" command (it costs a tool call
@@ -122,19 +129,22 @@ ones in the recap or merge consecutive ones from the same day.
 
 ### 2.1 LLM summarisation (PLAN.md stage 2)
 
-Heuristic summaries answer *what was touched*, never *why*. One cheap Haiku
-call at `SessionEnd` would turn the file/command list into two sentences of
-intent.
+Heuristic summaries answer *what was touched*, never *why*. Planned for 0.4.0:
+one cheap Haiku call per segment (not per tool call, as the original does),
+fed the segment's prompts, Claude's own explanations, its files and commit
+subject, returning a type (feature, fix, decision, …) and two sentences of
+what and why. The reason is taken from the conversation, where it was
+actually stated, instead of being inferred from tool calls.
+
+Run through `claude -p` on the user's existing subscription, so no API key.
+Known trap, handled by the original separately: the nested `claude` process
+runs our own hooks and would record itself and show up in `--resume`, so it
+must run with the plugin disabled for that process.
 
 Constraints agreed up front and still binding: off by default
-(`CLAUDE_MEM_LITE_LLM_SUMMARY=true`), key from the user's own environment,
-never bundled; falls back to the heuristic summary on any error; the raw
-heuristic details stay in the database either way, so a bad summary is never
-lossy. Store `summary_source = 'llm' | 'heuristic'` so the two are
-distinguishable.
-
-Worth doing only after a few weeks of real use show the heuristic recap is
-actually too thin — it may not be.
+(`CLAUDE_MEM_LITE_LLM_SUMMARY=true`); falls back to the heuristic record on
+any error; the heuristic details stay in the database either way, so a bad
+summary is never lossy; LLM text is marked as such.
 
 ### 2.2 MCP server (PLAN.md stage 3)
 

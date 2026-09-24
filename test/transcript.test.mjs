@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { describeToolUse, parseTranscript } from '../src/transcript.mjs';
-import { commitSession, sampleSession, toJsonl } from './helpers.mjs';
+import { assistantBlocks, commitSession, sampleSession, toJsonl, userPrompt } from './helpers.mjs';
 
 test('parseTranscript extracts prompts, tool uses, title and metadata', () => {
   const t = parseTranscript(toJsonl(sampleSession()));
@@ -56,4 +56,18 @@ test('parseTranscript attaches Bash output to its call', () => {
   assert.equal(bashes[3].isError, true);
   assert.equal(t.prompts.length, 1, 'tool results are not prompts');
   assert.equal(t.toolUses.find((u) => u.name === 'Edit').result, undefined);
+});
+
+test('every tool call gets its result time and error flag; only Bash keeps output', () => {
+  const edit = { ...assistantBlocks([{ type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: 'a.ts' } }]) };
+  const failed = userPrompt([{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'String to replace not found', is_error: true }]);
+  const t = parseTranscript(toJsonl([edit, failed]));
+  assert.equal(t.toolUses[0].isError, true);
+  assert.equal(t.toolUses[0].resultTs, failed.timestamp);
+  assert.equal(t.toolUses[0].result, undefined, 'non-Bash output is never kept');
+});
+
+test('Claude Code\'s own "[Request interrupted by user]" notes are not prompts', () => {
+  const t = parseTranscript(toJsonl([userPrompt('[Request interrupted by user for tool use]'), userPrompt('[Request interrupted by user]'), userPrompt('real question')]));
+  assert.deepEqual(t.prompts.map((p) => p.text), ['real question']);
 });

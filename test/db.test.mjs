@@ -128,3 +128,101 @@ test('ftsTerms quotes and prefixes each token', () => {
   assert.deepEqual(ftsTerms('fix login "bug"'), ['"fix"*', '"login"*', '"bug"*']);
   assert.deepEqual(ftsTerms('a'), []);
 });
+
+// --- segments -------------------------------------------------------------------
+
+function segmented(id, projectId, segments, extra = {}) {
+  return session(id, projectId, { ...extra, details: { format: 3, prompts: [], segments } });
+}
+
+const seg = (seq, sha, subject, endedAt, files, prompts = []) => ({
+  seq,
+  startedAt: null,
+  endedAt,
+  activeMin: 5,
+  commit: sha ? { sha, subject } : null,
+  files: files.map((path) => ({ path, kind: 'edit', ops: 2 })),
+  prompts,
+});
+
+function withSegments() {
+  const db = seeded();
+  db.upsertSession(
+    segmented('s4', projectA.id, [
+      seg(0, 'aaaaaaa', 'feat: exercise names translation', '2026-09-20T10:00:00Z', ['scripts/names.cjs', 'README.md'], ['translate the names']),
+      seg(1, 'bbbbbbb', 'fix: transliteration rule', '2026-09-22T10:00:00Z', ['scripts/names.cjs']),
+      seg(2, null, null, '2026-09-22T11:00:00Z', ['src/app.vue']),
+    ]),
+    [],
+  );
+  db.upsertSession(segmented('s5', projectB.id, [seg(0, 'ccccccc', 'other project', '2026-09-23T10:00:00Z', ['scripts/names.cjs'])]), []);
+  return db;
+}
+
+test('segments are stored with their files, replaced on upsert, listed newest first', () => {
+  const db = withSegments();
+  assert.deepEqual(
+    db.recentSegments({ projectId: projectA.id }).map((g) => [g.seq, g.commit_sha]),
+    [
+      [2, null],
+      [1, 'bbbbbbb'],
+      [0, 'aaaaaaa'],
+    ],
+  );
+  const first = db.sessionSegments('s4')[0];
+  assert.deepEqual(first.files.map((f) => f.path), ['README.md', 'scripts/names.cjs']);
+  assert.deepEqual(first.prompts, ['translate the names']);
+  assert.equal(first.branch, null);
+
+  db.upsertSession(segmented('s4', projectA.id, [seg(0, 'ddddddd', 'rewritten', '2026-09-24T10:00:00Z', ['x.ts'])]), []);
+  assert.deepEqual(db.sessionSegments('s4').map((g) => g.commit_sha), ['ddddddd']);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM segment_files WHERE session_id = 's4'").get().n, 1);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM segments_fts WHERE session_id = 's4'").get().n, 1);
+});
+
+test('recentSegments honours since and excludes a session', () => {
+  const db = withSegments();
+  assert.deepEqual(db.recentSegments({ since: '2026-09-22T00:00:00Z' }).map((g) => g.commit_sha ?? 'open'), ['ccccccc', 'open', 'bbbbbbb']);
+  assert.deepEqual(db.recentSegments({ excludeSessionId: 's4' }).map((g) => g.session_id), ['s5']);
+});
+
+test('touched finds the segments that edited a file, newest first, scoped by project', () => {
+  const db = withSegments();
+  const rows = db.touched('names.cjs', { projectId: projectA.id });
+  assert.deepEqual(rows.map((g) => g.commit_sha), ['bbbbbbb', 'aaaaaaa']);
+  assert.deepEqual(rows[1].matched.map((f) => f.path), ['scripts/names.cjs']);
+  assert.equal(db.touched('names.cjs').length, 3, 'all projects');
+  assert.equal(db.touched('NAMES.CJS', { projectId: projectA.id }).length, 2, 'case-insensitive');
+  assert.equal(db.touched('names.cjs', { projectId: projectA.id, since: '2026-09-21T00:00:00Z' }).length, 1);
+});
+
+test('searchSegments ranks commit subjects and prompts; segmentByCommit takes a prefix', () => {
+  const db = withSegments();
+  assert.deepEqual(db.searchSegments('transliteration').map((g) => g.commit_sha), ['bbbbbbb']);
+  assert.deepEqual(db.searchSegments('translate names').map((g) => g.commit_sha), ['aaaaaaa']);
+  assert.deepEqual(db.searchSegments('names', { projectId: projectB.id }).map((g) => g.commit_sha), ['ccccccc']);
+  assert.equal(db.segmentByCommit('bbbb').commit_subject, 'fix: transliteration rule');
+  assert.equal(db.segmentByCommit('zzzz'), null);
+  assert.equal(db.segmentByCommit('eeee'), null);
+});
+
+test('deleting a session or project removes its segments and their index', () => {
+  const db = withSegments();
+  db.deleteSession('s4');
+  assert.equal(db.searchSegments('transliteration').length, 0);
+  assert.equal(db.recentSegments({ projectId: projectA.id }).length, 0);
+  db.deleteProject(projectB.id);
+  assert.equal(db.db.prepare('SELECT COUNT(*) AS n FROM segments_fts').get().n, 0);
+  assert.equal(db.db.prepare('SELECT COUNT(*) AS n FROM segment_files').get().n, 0);
+});
+
+test('sessionsOlderThan finds rows written before a details format; updatedAt can be kept', () => {
+  const db = withSegments();
+  assert.deepEqual(db.sessionsOlderThan(3).map((s) => s.id).sort(), ['s1', 's2', 's3']);
+  db.upsertSession({ ...segmented('s1', projectA.id, []), updatedAt: '2020-01-01T00:00:00Z' }, []);
+  assert.equal(db.getSession('s1').updated_at, '2020-01-01T00:00:00Z');
+  assert.deepEqual(db.sessionsOlderThan(3).map((s) => s.id).sort(), ['s2', 's3']);
+  db.setMeta('k', 'v');
+  assert.equal(db.getMeta('k'), 'v');
+  assert.equal(db.getMeta('missing'), null);
+});

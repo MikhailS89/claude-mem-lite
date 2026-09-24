@@ -7,7 +7,11 @@ import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
 import { limits } from './config.mjs';
 import { isSensitivePath, safeSlice, sanitize, truncate } from './privacy.mjs';
+import { buildSegments, removalsFromCommand } from './segments.mjs';
 import { describeToolUse } from './transcript.mjs';
+
+/** Version of the `details` JSON; bump when old rows should be re-indexed. */
+export const DETAILS_FORMAT = 3;
 
 /**
  * Make a path relative to the project root (or `~` for the home directory)
@@ -89,12 +93,13 @@ export function isDocPath(p) {
 /**
  * @param {import('./transcript.mjs').ParsedTranscript} t
  * @param {{root: string}} project
- * @param {{head?: {ref: string|null, sha: string|null}|null, headCommits?: {sha:string, subject:string, time:number}[], commitExists?: ((sha:string) => boolean)|null}} [opts]
- *        HEAD of the repository at capture time, the commits on HEAD made
- *        since the session started, and a check that a commit seen in the
- *        transcript belongs to this repository (all backed by `.git`)
+ * @param {object} [opts] everything read from the repository by the caller:
+ * @param {{ref: string|null, sha: string|null}|null} [opts.head]  HEAD at capture time
+ * @param {{sha:string, subject:string, time:number}[]} [opts.headCommits]  commits on HEAD since the session started
+ * @param {((sha:string) => boolean)|null} [opts.commitExists]  does a commit seen in the transcript belong to this repo
+ * @param {{clean:boolean, count:number, paths:string[]}|null} [opts.worktree]  `git status` at capture time, if known
  */
-export function summarize(t, project, { head = null, headCommits = [], commitExists = null } = {}) {
+export function summarize(t, project, { head = null, headCommits = [], commitExists = null, worktree = null } = {}) {
   const root = project?.root ?? null;
 
   // --- files, commands, commits ----------------------------------------------
@@ -105,8 +110,10 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
   const tools = {};
   /** @type {{sha:string, subject:string, branch:string|null, ts:string}[]} */
   const commits = [];
-  /** Every edit with its time, to find the ones after the last commit. */
+  /** Every edit with its time: segments, rework, edits after the last commit. */
   const edits = [];
+  /** Files removed or discarded by Bash commands, for rework detection. */
+  const removals = [];
   let sensitiveTouches = 0;
 
   for (const use of t.toolUses) {
@@ -117,18 +124,23 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
         sensitiveTouches++;
         continue;
       }
+      // A failed Edit/Write ("string not found") changed nothing.
+      if (d.file.kind !== 'read' && use.isError) continue;
       const key = displayPath(d.file.path, root);
       const cur = files.get(key) ?? { path: key, kind: 'read', ops: 0 };
       cur.ops++;
       // edit/write outranks read
       if (d.file.kind !== 'read') {
         cur.kind = cur.kind === 'read' ? d.file.kind : cur.kind;
-        // Only files a commit here could contain count as "edited after the last commit".
-        if (isProjectPath(key)) edits.push({ path: key, ms: Date.parse(use.ts) });
+        edits.push({ path: key, kind: d.file.kind, ms: Date.parse(use.ts), project: isProjectPath(key), doc: isDocPath(key) });
       }
       files.set(key, cur);
     } else if (d.command) {
       commands.push(truncate(sanitize(d.command), limits.commandChars));
+      if (!use.isError) {
+        const ms = Date.parse(use.ts);
+        for (const r of removalsFromCommand(d.command, t.cwd || root || '.', (abs) => displayPath(abs, root))) removals.push({ ...r, ms });
+      }
       // Output alone does not say which repository the commit was made in.
       const made = (use.isError ? [] : commitsFromBash(d.command, use.result)).filter((c) => !commitExists || commitExists(c.sha));
       if (made.length) {
@@ -197,8 +209,27 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
     // Claude's own edits: changes made outside the session are invisible here,
     // so this is never a claim that the working tree is clean.
     editedAfterLastCommit:
-      lastCommitMs === null ? null : uniq(edits.filter((e) => e.ms > lastCommitMs).map((e) => e.path)).slice(0, limits.files),
+      lastCommitMs === null
+        ? null
+        : uniq(edits.filter((e) => e.project && e.ms > lastCommitMs).map((e) => e.path)).slice(0, limits.files),
+    // `git status` when the session last saved: the authoritative answer to
+    // "is anything uncommitted", including edits made outside the session.
+    worktree,
   };
+
+  // --- segments between commits, and what did not settle ---------------------
+  const { segments, rework } = buildSegments(
+    {
+      edits,
+      prompts: prompts.map((p) => ({ text: p.text, ms: Date.parse(p.ts) })),
+      commits: commits.map((c) => ({ sha: c.sha, subject: c.subject, ms: Date.parse(c.ts) })),
+      removals,
+      activity: t.toolUses.map((u) => [Date.parse(u.ts), Date.parse(u.resultTs ?? u.ts)]),
+      startedAt: t.startedAt,
+      endedAt: t.endedAt,
+    },
+    { maxPrompts: 10, maxFiles: 60 },
+  );
 
   // --- index-level summary ---------------------------------------------------
   const parts = [];
@@ -214,10 +245,14 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
   if (cmdPreview.length && !commits.length) parts.push(`ran: ${listPreview(cmdPreview, 5)}`);
   if (lastPrompt && lastPrompt !== firstPrompt) parts.push(`last request: "${truncate(lastPrompt, 140)}"`);
   else if (firstPrompt && !t.title) parts.push(`request: "${truncate(firstPrompt, 140)}"`);
+  const undone = rework.filter((r) => r.reason !== 'revisited');
+  if (undone.length) parts.push(`undone: ${listPreview(undone.map((r) => r.path), 3)}`);
   if (outcome && !commits.length) parts.push(`outcome: "${briefText(outcome, 200)}"`);
   const summary = parts.join(' · ');
 
   const details = {
+    // Rows without `format` were written before segments existed (0.1 / 0.2).
+    format: DETAILS_FORMAT,
     title,
     prompts: prompts.slice(-limits.prompts),
     filesEdited: edited.slice(0, limits.files),
@@ -226,6 +261,8 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
     searches: uniq(searches).slice(0, 20),
     commits: commits.slice(-limits.commits),
     git,
+    segments,
+    rework,
     tools,
     outcome,
     stats,

@@ -3,11 +3,12 @@
 // and once more at the end is safe.
 
 import { existsSync } from 'node:fs';
-import { enabled, isDisabledForProject, limits } from './config.mjs';
+import { enabled, gitStatus, isDisabledForProject, limits } from './config.mjs';
 import { MemoryDb } from './db.mjs';
 import { logDebug } from './log.mjs';
 import { findGitRoot, objectLookup, readCommits, readHead, resolveProject } from './project.mjs';
 import { summarize } from './summarize.mjs';
+import { readWorktree } from './worktree.mjs';
 import { parseTranscriptFile } from './transcript.mjs';
 
 /**
@@ -47,22 +48,39 @@ export function captureSession(input, { final = false, db = null } = {}) {
 
 /**
  * Everything the database would store for one session, without storing it.
- * Shared by the hooks and by `search.mjs replay`, so a replay exercises
- * exactly the code the hooks run.
+ * Shared by the hooks, by re-indexing and by `search.mjs replay`, so all of
+ * them exercise exactly the code the hooks run.
+ *
+ * `live` means the session is happening now (the hooks): the repository's
+ * current HEAD and `git status` describe its end state. For an old transcript
+ * (re-indexing, replay) they describe today instead, so HEAD at end is taken
+ * from the session's own last commit and the worktree is left unknown.
  * @returns {{project: object, row: object, files: object[], stats: object}|null} null for an empty transcript
  */
-export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = false, endReason = null }) {
+export function buildSessionRecord({ sessionId, transcriptPath, cwd, final = false, endReason = null, live = true }) {
   const project = resolveProject(cwd);
   const transcript = parseTranscriptFile(transcriptPath);
   if (transcript.prompts.length === 0 && transcript.toolUses.length === 0) return null;
 
-  // Stop runs after every turn, so the last capture holds HEAD at session end.
+  // Stop runs after every turn, so the last live capture holds HEAD at session end.
   const gitRoot = findGitRoot(cwd);
-  const head = readHead(gitRoot);
+  const currentHead = readHead(gitRoot);
   const since = Date.parse(transcript.startedAt ?? '');
-  const headCommits = head?.sha && Number.isFinite(since) ? readCommits(gitRoot, head.sha, { since, max: limits.commits }) : [];
+  // An old session may have hundreds of commits on top of it; walk further back.
+  const max = live ? limits.commits : 500;
+  const headCommits = currentHead?.sha && Number.isFinite(since) ? readCommits(gitRoot, currentHead.sha, { since, max }) : [];
   const commitExists = objectLookup(gitRoot);
-  const { title, summary, details, files, stats } = summarize(transcript, project, { head, headCommits, commitExists });
+  const worktree = live && gitStatus ? readWorktree(gitRoot) : null;
+  const { title, summary, details, files, stats } = summarize(transcript, project, {
+    head: live ? currentHead : null,
+    headCommits,
+    commitExists,
+    worktree,
+  });
+  if (!live && details.commits.length) {
+    const last = details.commits[details.commits.length - 1];
+    details.git.head = { ref: last.branch ?? transcript.branch ?? null, sha: last.sha };
+  }
 
   const row = {
     id: sessionId,
