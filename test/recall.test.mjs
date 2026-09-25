@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatSessionBrief, parseSince, reworkLines } from '../src/recall.mjs';
+import { formatSessionBrief, isTrivialSession, parseSince, pickSessions, reworkLines } from '../src/recall.mjs';
 import { summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
 import { commitSession, toJsonl } from './helpers.mjs';
@@ -127,4 +127,34 @@ test('parseSince accepts relative spans and dates, rejects the rest', () => {
   assert.equal(parseSince('2026-09-01', now), '2026-09-01T00:00:00.000Z');
   assert.throws(() => parseSince('yesterday', now), /--since expects/);
   assert.throws(() => parseSince(undefined, now), /--since expects/);
+});
+
+// --- short sessions without changes (IDEAS 1.8) ---------------------------------
+
+const trivialRow = (id, text, extra = {}) => ({
+  id,
+  started_at: extra.started_at ?? '2026-09-25T09:00:00Z',
+  updated_at: extra.updated_at ?? '2026-09-25T09:05:00Z',
+  status: 'ended',
+  details: JSON.stringify({ format: 3, segments: [{ seq: 0, commit: null, files: [], prompts: [text] }], prompts: [{ ts: '', text }], filesEdited: [], stats: { prompts: 1 }, ...extra.details }),
+});
+
+test('a short session that changed nothing is trivial; real work and long talks are not', () => {
+  assert.equal(isTrivialSession(trivialRow('t1', 'Привет, на чём остановились?')), true);
+  assert.equal(isTrivialSession(trivialRow('t2', 'x', { details: { filesEdited: ['~/notes.md'] } })), true, 'edits outside the project do not count');
+  assert.equal(isTrivialSession(trivialRow('t3', 'x', { details: { filesEdited: ['src/a.ts'] } })), false);
+  assert.equal(isTrivialSession(trivialRow('t4', 'x', { details: { stats: { prompts: 12 } } })), false, 'a long discussion may hold a decision');
+  assert.equal(isTrivialSession(trivialRow('t5', 'x', { details: { segments: [{ seq: 0, commit: { sha: 'a', subject: 's' }, files: [] }] } })), false);
+  assert.equal(isTrivialSession(trivialRow('t6', 'x', { details: { rework: [{ path: 'a', reason: 'deleted', segments: [0], edits: 1 }] } })), false);
+});
+
+test('pickSessions fills the recap with real work and reports what it passed over', () => {
+  const work = (id) => ({ ...trivialRow(id, 'x'), details: JSON.stringify({ format: 3, segments: [], filesEdited: ['src/a.ts'], stats: { prompts: 9 } }) });
+  const list = [trivialRow('q1', 'где остановились'), work('w1'), trivialRow('q2', 'claude plugin list'), work('w2'), work('w3')];
+  const { sessions, skipped } = pickSessions(list, 2);
+  assert.deepEqual(sessions.map((s) => s.id), ['w1', 'w2']);
+  assert.deepEqual(skipped.map((s) => s.id), ['q1', 'q2']);
+  const only = pickSessions([trivialRow('q1', 'a'), trivialRow('q2', 'b')], 5);
+  assert.deepEqual(only.sessions.map((s) => s.id), ['q1', 'q2'], 'all trivial: still show something');
+  assert.deepEqual(only.skipped, []);
 });

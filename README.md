@@ -90,7 +90,9 @@ plugin on your machine before enabling it.
 
 Five sessions, at most ~4 000 characters (~1 000 tokens); the newest in
 detail, the older ones in two segments each. That is the whole per-session
-cost of the plugin.
+cost of the plugin. Short sessions that changed nothing ("where did we
+stop?", at most three prompts, no edits or commits) do not take a place; the
+recap mentions them in one line at the end.
 
 The recap describes where the work was left, not how busy the session was:
 

@@ -130,9 +130,17 @@ the recap falls back to what the transcript printed. Other edges:
 ### 1.8 Low-value sessions take up recap slots
 
 "Привет, напомни на чём остановились" — one prompt, zero tool calls — occupies
-one of the five recap slots just like a session that edited 20 files. Fix:
-score sessions (tool calls, files edited, duration) and either skip trivial
-ones in the recap or merge consecutive ones from the same day.
+one of the five recap slots just like a session that edited 20 files.
+
+**Done in 0.6.2.** A session is trivial when it changed no project file, made
+no commit, undid or revisited nothing, and had at most three prompts. The
+recap skips trivial sessions (it looks four times further back to fill its
+places with real work) and says in one line how many it passed over; if every
+session is trivial it shows them as before. Longer talks without edits are
+kept on purpose: a design discussion may be where something was agreed.
+`recent` also leaves out talk-only segments (no commit, no files); search
+still finds them. On the real database this removed the two
+`claude plugin list` check-ins from the recaps of two projects.
 
 ### 1.9 File hints and shell reads
 

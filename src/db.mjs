@@ -390,8 +390,11 @@ export class MemoryDb {
    * Most recent segments across sessions: the unit `recent` lists.
    * @param {{projectId?:string|null, limit?:number, since?:string|null, excludeSessionId?:string|null}} [opts]
    */
-  recentSegments({ projectId = null, limit = 10, since = null, excludeSessionId = null } = {}) {
-    const { where, params } = segmentFilters({ projectId, since, excludeSessionId });
+  recentSegments({ projectId = null, limit = 10, since = null, excludeSessionId = null, includeEmpty = false } = {}) {
+    // A segment with no commit and no file changes is talk only ("where did we
+    // stop?"): search still finds it, but it is not "recent work".
+    const extra = includeEmpty ? [] : ['(g.commit_sha IS NOT NULL OR EXISTS (SELECT 1 FROM segment_files f WHERE f.session_id = g.session_id AND f.seq = g.seq))'];
+    const { where, params } = segmentFilters({ projectId, since, excludeSessionId }, extra);
     const sql = `${SEGMENT_SELECT} ${where} ORDER BY g.ended_at DESC, g.seq DESC LIMIT ?`;
     return this.#withFiles(this.db.prepare(sql).all(...params, limit));
   }

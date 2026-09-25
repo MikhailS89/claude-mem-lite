@@ -297,6 +297,30 @@ test('the file-hint hook adds a file\'s history to the tool result, once, and ca
   assert.equal(runHook('file-hint.mjs', { ...read, tool_input: { file_path: join(repo, 'src', 'never.ts') } }, {}, dataDir).stdout, '');
 });
 
+test('short sessions without changes give their recap places to real work', () => {
+  const dataDir = join(tmp, 'trivial');
+  const repo = join(tmp, 'trivial-repo');
+  mkdirSync(repo, { recursive: true });
+  const stop = (id, records) => {
+    const t = join(tmp, `${id}.jsonl`);
+    writeFileSync(t, toJsonl(records));
+    runHook('session-stop.mjs', { session_id: id, transcript_path: t, cwd: repo, hook_event_name: 'Stop' }, { CLAUDE_MEM_LITE_GIT_STATUS: 'false' }, dataDir);
+  };
+  stop('work-1', commitSession({ cwd: repo, sessionId: 'work-1' }));
+  stop('ask-1', [userPrompt('Привет, на чём остановились?', { cwd: repo, sessionId: 'ask-1' }), assistantText('На этапе 1.', { cwd: repo, sessionId: 'ask-1' })]);
+  stop('ask-2', [userPrompt('claude plugin list', { cwd: repo, sessionId: 'ask-2' })]);
+
+  const r = runHook('session-start.mjs', { session_id: 'now', cwd: repo, hook_event_name: 'SessionStart' }, {}, dataDir);
+  const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  assert.match(ctx, /### [^\n]*Implement stage 1/, 'the real work is shown');
+  assert.doesNotMatch(ctx, /### [^\n]*(на чём|plugin list)/, 'the check-ins are not');
+  assert.match(ctx, /\(2 short sessions without changes not shown; latest \d{4}-\d{2}-\d{2} \d{2}:\d{2}: "claude plugin list"\)$/);
+
+  const recent = runCli(['--cwd', repo, 'recent'], dataDir).stdout;
+  assert.doesNotMatch(recent, /no project file changes/, 'talk-only segments are not recent work');
+  assert.match(runCli(['--cwd', repo, 'остановились'], dataDir).stdout, /session ask-1/, 'but search still finds them');
+});
+
 test('with LLM summaries off (the default), no worker and no notes', () => {
   const dataDir = join(tmp, 'no-notes');
   const repo = join(tmp, 'no-notes-repo');

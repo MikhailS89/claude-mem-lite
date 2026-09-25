@@ -242,8 +242,11 @@ export function buildRecall(input, { db = null } = {}) {
   try {
     const total = store.countSessions(project.id);
     if (!total) return null;
-    const sessions = store.recentSessions({ projectId: project.id, limit: recallSessions, excludeId: input.session_id ?? null });
-    if (!sessions.length) return null;
+    // Look further back than the recap shows, so that short sessions without
+    // changes ("where did we stop?") do not take the places of real work.
+    const candidates = store.recentSessions({ projectId: project.id, limit: recallSessions * 4, excludeId: input.session_id ?? null });
+    if (!candidates.length) return null;
+    const { sessions, skipped } = pickSessions(candidates, recallSessions);
 
     const header = [
       `# claude-mem-lite: previous sessions in this project (${project.name})`,
@@ -265,10 +268,50 @@ export function buildRecall(input, { db = null } = {}) {
       }
       out += brief;
     }
+    if (skipped.length) {
+      const latest = skipped[0];
+      const asked = safeJson(latest.details).prompts?.[0]?.text;
+      const line = `(${skipped.length} short session${skipped.length === 1 ? '' : 's'} without changes not shown; latest ${fmtTime(latest.started_at ?? latest.updated_at)}${asked ? `: "${truncate(asked, 80)}"` : ''})`;
+      if (out.length + line.length + 2 <= recallMaxChars) out = `${out.trimEnd()}\n\n${line}`;
+    }
     return bmpSafe(out.trimEnd());
   } finally {
     if (own) store.close();
   }
+}
+
+/** Prompts at most this many, and nothing changed: a check-in, not work. */
+const TRIVIAL_PROMPTS = 3;
+
+/**
+ * A session that changed nothing in the project and was short: no edits to
+ * project files, no commits, nothing undone or revisited, at most three
+ * prompts ("where did we stop?", "claude plugin list"). Longer talks without
+ * edits are kept: a design discussion may be where something was agreed.
+ */
+export function isTrivialSession(s) {
+  const d = safeJson(s.details);
+  const edited = (d.filesEdited ?? []).some((p) => isProjectPath(p));
+  const committed = (d.segments ?? []).some((g) => g.commit) || (d.commits ?? []).length > 0;
+  const prompts = d.stats?.prompts ?? d.prompts?.length ?? 0;
+  return !edited && !committed && !(d.rework ?? []).length && prompts <= TRIVIAL_PROMPTS;
+}
+
+/**
+ * The sessions to show: the newest `limit` that are not trivial, plus the
+ * trivial ones that were passed over among them (newest first). When every
+ * candidate is trivial, show them anyway rather than nothing.
+ */
+export function pickSessions(candidates, limit) {
+  const sessions = [];
+  const skipped = [];
+  for (const s of candidates) {
+    if (sessions.length >= limit) break;
+    if (isTrivialSession(s)) skipped.push(s);
+    else sessions.push(s);
+  }
+  if (!sessions.length) return { sessions: candidates.slice(0, limit), skipped: [] };
+  return { sessions, skipped };
 }
 
 function commitShas(s) {
