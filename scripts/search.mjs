@@ -12,6 +12,7 @@
 //   search.mjs forget-project <id>      delete a project and all its sessions
 //   search.mjs where                    database location and current project id
 //   search.mjs reindex                  rebuild rows written by older versions from their transcripts
+//   search.mjs stats                    is the memory used, and does a recap change how work starts
 //   search.mjs summarize [session-id]   write "what / why" notes for commits that have none (uses claude -p)
 //   search.mjs replay <file.jsonl>      dry run: what the hooks would store and recall for a
 //                                       transcript, without touching the database
@@ -29,6 +30,7 @@ import { findGitRoot, readHead, resolveProject } from '../src/project.mjs';
 import { pendingCommits, summarizePending } from '../src/notes.mjs';
 import { fmtTime, formatSessionBrief, isLikelyOpen, parseSince, reworkLines, segmentLine, statedWhy } from '../src/recall.mjs';
 import { findTranscript, reindexSome } from '../src/reindex.mjs';
+import { collectStats } from '../src/stats.mjs';
 import { parseTranscriptFile } from '../src/transcript.mjs';
 
 function parseArgs(argv) {
@@ -61,6 +63,7 @@ function usage() {
   search.mjs forget-project <id>      delete a project and all its sessions
   search.mjs where                    database location and current project id
   search.mjs reindex                  rebuild rows written by older versions from their transcripts
+  search.mjs stats                    is the memory used; how sessions start with a recap vs without
   search.mjs summarize [session-id]   write "what / why" notes for commits without one (claude -p, ~$0.01-0.015 each)
   search.mjs replay <file.jsonl>      dry run of capture + recap on a transcript (no db writes)
 
@@ -239,6 +242,44 @@ function summarizeCommand(db, sessionArg, { projectId, since, limit }) {
   return lines.length ? [...lines, `${total} commit note(s) written.`].join('\n') : 'Every commit in scope already has a note.';
 }
 
+// --- stats ----------------------------------------------------------------------
+
+/** Is the memory used, and does a recap change how work starts? (src/stats.mjs collects.) */
+function statsCommand(db, { projectId, since, json }) {
+  const a = collectStats(db, { projectId, since });
+  const { unrecorded, noData, commitNotes: notes } = a;
+  if (json) return JSON.stringify(a, null, 2);
+  if (!a.sessions) return 'No sessions in scope.';
+
+  const fmt = (x, digits = 0) => (x === null ? '-' : x.toFixed(digits));
+  const w = a.withRecap;
+  const wo = a.withoutRecap;
+  const row = (label, x, y) => `  ${label.padEnd(40)}${String(x).padStart(12)}${String(y).padStart(12)}`;
+  const scopeLabel = `${projectId ? `project ${projectId}` : 'all projects'}${since ? `, since ${fmtTime(since)}` : ''}`;
+  const lookups = Object.entries(a.memSearch.bySubcommand).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+  return [
+    `claude-mem-lite usage: ${scopeLabel}`,
+    `Sessions: ${a.sessions} (${w.sessions} started with a recap)` +
+      (unrecorded ? `; ${unrecorded} read only from transcripts (before the plugin, or with it off)` : '') +
+      (noData ? `; ${noData} without a transcript left, not counted` : ''),
+    '',
+    'Start of work, in sessions that edited project files:',
+    row('', 'with recap', 'without'),
+    row('sessions', w.edited, wo.edited),
+    row('tool calls before the first edit (median)', fmt(w.medianCallsBeforeEdit, 1), fmt(wo.medianCallsBeforeEdit, 1)),
+    row('git log/show/blame before it (average)', fmt(w.historyLookupsPerSession, 2), fmt(wo.historyLookupsPerSession, 2)),
+    row('sessions that looked at git history', w.sessionsWithHistoryLookups, wo.sessionsWithHistoryLookups),
+    '',
+    `Memory lookups: ${a.memSearch.calls} mem-search call(s) in ${a.memSearch.sessions} session(s)${lookups ? ` (${lookups})` : ''}`,
+    `File hints shown: ${a.hints} in ${a.sessionsWithHints} session(s)`,
+    `Recap size: ${a.recapChars === null ? '-' : `~${Math.round(a.recapChars)} chars (~${Math.round(a.recapChars / 3.5)} tokens)`} on average`,
+    `Commit notes: ${notes.ok} written, $${notes.costUsd.toFixed(3)} spent on model calls`,
+    '',
+    'Fewer calls and git lookups before the first edit with a recap is the effect to watch. The two groups',
+    'differ in more than the recap (first sessions in a project have none), so read it as a trend.',
+  ].join('\n');
+}
+
 // --- replay ---------------------------------------------------------------------
 
 /**
@@ -331,6 +372,8 @@ function main() {
         const r = reindexSome(db, { budget: Infinity, force: true });
         return `Rebuilt ${r.rebuilt} session(s) from their transcripts; ${r.missing} kept as legacy records (transcript no longer on disk).`;
       }
+      case 'stats':
+        return statsCommand(db, scope);
       case 'search':
         return search(db, rest.join(' '), scope);
       default:

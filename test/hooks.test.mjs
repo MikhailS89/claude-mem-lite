@@ -41,10 +41,10 @@ function runHook(script, input, envExtra = {}, dataDir = join(tmp, 'data')) {
   return { ...r, dataDir };
 }
 
-function runCli(args, dataDir = join(tmp, 'data')) {
+function runCli(args, dataDir = join(tmp, 'data'), envExtra = {}) {
   return spawnSync(process.execPath, ['--no-warnings', join(root, 'scripts', 'search.mjs'), ...args], {
     encoding: 'utf8',
-    env: { ...cleanEnv(), CLAUDE_MEM_LITE_DIR: dataDir },
+    env: { ...cleanEnv(), CLAUDE_MEM_LITE_DIR: dataDir, ...envExtra },
     timeout: 20_000,
   });
 }
@@ -139,6 +139,17 @@ test('CLI search, show, recent and touched work against the stored session', () 
   r = runCli(['--all', 'recent', '--since', 'soon']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /--since expects/);
+});
+
+test('CLI stats runs over the database and transcripts (this test project sits in a temp dir, so it is not counted)', () => {
+  let r = runCli(['--cwd', projectDir, 'stats', '--json'], undefined, { CLAUDE_CONFIG_DIR: join(tmp, 'config') });
+  assert.equal(r.status, 0, r.stderr);
+  const s = JSON.parse(r.stdout);
+  assert.equal(s.sessions, 0);
+  assert.deepEqual(Object.keys(s.commitNotes), ['total', 'ok', 'costUsd']);
+  r = runCli(['--all', 'stats'], undefined, { CLAUDE_CONFIG_DIR: join(tmp, 'config') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /No sessions in scope/);
 });
 
 test('CLI forget removes the session and its segments', () => {

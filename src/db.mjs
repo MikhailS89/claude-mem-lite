@@ -375,6 +375,24 @@ export class MemoryDb {
       .run(sha, projectId, sessionId, status, type, what, why, error, model, costUsd, new Date().toISOString());
   }
 
+  /** How many commit notes were written and what the model calls cost, optionally scoped. */
+  noteTotals({ projectId = null, since = null } = {}) {
+    const where = [];
+    const params = [];
+    if (projectId) {
+      where.push('project_id = ?');
+      params.push(projectId);
+    }
+    if (since) {
+      where.push('created_at >= ?');
+      params.push(since);
+    }
+    const sql = `SELECT COUNT(*) AS total, SUM(status = 'ok') AS ok, COALESCE(SUM(cost_usd), 0) AS cost
+                 FROM commit_notes ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`;
+    const r = this.db.prepare(sql).get(...params);
+    return { total: Number(r.total), ok: Number(r.ok ?? 0), costUsd: Number(r.cost) };
+  }
+
   /** Rebuild one session's segment search rows, e.g. after notes arrived. */
   refreshSegmentIndex(sessionId) {
     const s = this.getSession(sessionId);

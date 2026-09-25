@@ -10,7 +10,7 @@
 // upgrade converts the whole database within a few turns without ever making
 // one hook run long; `search.mjs reindex` does the same in one go.
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { buildSessionRecord } from './capture.mjs';
@@ -41,6 +41,36 @@ export function findTranscript(sessionId, roots = transcriptRoots()) {
     }
   }
   return null;
+}
+
+/** Every top-level `<sessionId>.jsonl` under the transcript roots (subagent files live deeper). */
+export function listTranscripts(roots = transcriptRoots()) {
+  const out = [];
+  for (const root of roots) {
+    let dirs = [];
+    try {
+      dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory());
+    } catch {
+      continue;
+    }
+    for (const d of dirs) {
+      let files = [];
+      try {
+        files = readdirSync(join(root, d.name), { withFileTypes: true }).filter((f) => f.isFile() && f.name.endsWith('.jsonl'));
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        const path = join(root, d.name, f.name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = statSync(path).mtimeMs;
+        } catch {}
+        out.push({ id: f.name.slice(0, -'.jsonl'.length), path, mtimeMs });
+      }
+    }
+  }
+  return out;
 }
 
 /**

@@ -7,6 +7,7 @@
 //                                                               for Bash only (to find commits)
 //   type=assistant message.content = [{type:"text"|"tool_use"|"thinking"}]
 //   type=ai-title  aiTitle                                -> session title
+//   type=attachment attachment.type=hook_additional_context -> what our hooks added (usage stats)
 // Records flagged `isSidechain` belong to subagents and are skipped; `isMeta`
 // records are Claude Code's own bookkeeping (slash-command caveats etc.).
 
@@ -40,6 +41,8 @@ const FILE_TOOLS = {
  *           `resultTs` is when the call's result arrived and `isError` whether it failed;
  *           `result` is the (truncated) output, kept for Bash calls only
  * @property {{ts:string, text:string}[]} assistantTexts  final text of each assistant turn
+ * @property {{ts:string, event:string, chars:number}[]} injections  context this plugin's hooks added
+ *           (the SessionStart recap, file hints), as Claude Code recorded it
  * @property {number} lines  number of lines successfully parsed
  */
 
@@ -60,6 +63,7 @@ export function parseTranscript(text) {
     prompts: [],
     toolUses: [],
     assistantTexts: [],
+    injections: [],
     lines: 0,
   };
 
@@ -80,6 +84,11 @@ export function parseTranscript(text) {
 
     if (rec.type === 'ai-title' && typeof rec.aiTitle === 'string') {
       out.title = rec.aiTitle.trim() || out.title;
+      continue;
+    }
+    if (rec.type === 'attachment' && !rec.isSidechain) {
+      const injection = pluginInjection(rec);
+      if (injection) out.injections.push(injection);
       continue;
     }
     if (rec.type !== 'user' && rec.type !== 'assistant') continue;
@@ -139,6 +148,20 @@ function attachResults(content, pending, ts) {
           : '';
     use.result = text.slice(0, RESULT_CHARS);
   }
+}
+
+/**
+ * Claude Code records what a hook added to the context as
+ * `{type:"attachment", attachment:{type:"hook_additional_context", hookEvent, content:[...]}}`.
+ * Ours always start with "claude-mem-lite" (the recap with a "# " heading).
+ */
+function pluginInjection(rec) {
+  const a = rec.attachment;
+  if (a?.type !== 'hook_additional_context') return null;
+  const text = Array.isArray(a.content) ? a.content.filter((c) => typeof c === 'string').join('\n') : typeof a.content === 'string' ? a.content : '';
+  if (!/^(# )?claude-mem-lite\b/.test(text)) return null;
+  const event = a.hookEvent ?? String(a.hookName ?? '').split(':')[0];
+  return { ts: rec.timestamp ?? '', event, chars: text.length };
 }
 
 /** Join the user's own text blocks, ignoring everything Claude Code injected. */

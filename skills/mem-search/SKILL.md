@@ -31,6 +31,7 @@ Subcommands, most useful first:
 - `recent [--limit N]` — newest segments first (`--sessions` for whole sessions).
 - `show <session-id | commit sha>` — one session with all its segments, or the segment a commit belongs to (an 8-char id or 7-char sha prefix is enough).
 - `projects` — all projects that have memory.
+- `stats [--since 7d]` — only when the user asks whether the memory helps: recap / hint / lookup counts, and how sessions started with a recap vs without (tool calls and git history lookups before the first edit). Relay the table and its caveat; do not draw a verdict from a handful of sessions.
 - `forget <session-id>` — delete a session (only when the user asks).
 
 Flags: `--since 24h|7d|2w|YYYY-MM-DD` limits to recent work; `--all` searches every project instead of the current one; `--limit N`; `--json` for machine-readable output.

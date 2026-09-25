@@ -9,6 +9,7 @@ import { limits } from './config.mjs';
 import { isSensitivePath, safeSlice, sanitize, truncate } from './privacy.mjs';
 import { buildSegments, removalsFromCommand } from './segments.mjs';
 import { describeToolUse } from './transcript.mjs';
+import { usageOf } from './usage.mjs';
 
 /** Version of the `details` JSON; bump when old rows should be re-indexed. */
 export const DETAILS_FORMAT = 3;
@@ -267,6 +268,7 @@ export function summarize(t, project, { head = null, headCommits = [], commitExi
     tools,
     outcome,
     stats,
+    usage: usageOf(t, (p) => displayPath(p, root)),
   };
 
   return { title, summary, details, files: fileList.slice(0, limits.files), stats };

@@ -201,6 +201,7 @@ node scripts/search.mjs forget ac6ab616          # delete one session
 node scripts/search.mjs forget-project git:github.com/me/repo
 node scripts/search.mjs where                    # db path + how the current project is identified
 node scripts/search.mjs reindex                  # rebuild old-format sessions from transcripts now
+node scripts/search.mjs stats --since 7d         # is the memory used, and does it change how work starts
 node scripts/search.mjs summarize --since 7d     # write commit notes for past work (costs, see above)
 node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
                                                  # dry run: what the hooks would store and recall
@@ -208,7 +209,40 @@ node scripts/search.mjs replay ~/.claude/projects/<dir>/<session>.jsonl
 ```
 
 `--since` takes `24h`, `7d`, `2w` or a date (`2026-09-01`) and works with
-`recent`, `touched` and search.
+`recent`, `touched`, `stats` and search.
+
+**Is it worth it?** `stats` measures instead of guessing. From each session's
+transcript it takes what Claude actually received (the recap and its size, file
+hints), how often it looked something up with `mem-search`, and how work
+started: tool calls before the first edit of a project file, and how many of
+them were `git log` / `show` / `blame`, the lookups a recap is meant to
+replace. Sessions that started with a recap are compared against those that
+did not, including transcripts from before the plugin was installed (Claude
+Code keeps them for 30 days). Sessions in the temp directory are experiments
+and are left out, as are lookups against another database or through a
+relative `scripts/search.mjs`, which is work on the plugin itself. It also
+totals what commit notes cost.
+
+```
+claude-mem-lite usage: project git:github.com/me/repo, since 2026-09-18 13:03
+Sessions: 7 (4 started with a recap)
+
+Start of work, in sessions that edited project files:
+                                            with recap     without
+  sessions                                           3           2
+  tool calls before the first edit (median)        14.0         5.5
+  git log/show/blame before it (average)          0.33        0.00
+  sessions that looked at git history                1           0
+
+Memory lookups: 6 mem-search call(s) in 2 session(s) (recent 3, show 2, search 1)
+File hints shown: 18 in 2 session(s)
+Recap size: ~1126 chars (~322 tokens) on average
+Commit notes: 35 written, $0.603 spent on model calls
+```
+
+The groups differ in more than the recap (the first session in a project has
+none; long sessions explore more), so read the table as a trend over weeks
+of ordinary work, not as a precise number.
 
 ## What is stored, and where
 
@@ -323,6 +357,8 @@ src/notes.mjs                which commits need a note; the background worker's 
 scripts/notes-worker.mjs     the short-lived background process that writes notes
 src/hints.mjs                a file's history for the PostToolUse hook (scripts/file-hint.mjs)
 src/recall.mjs               SessionStart recap
+src/usage.mjs                per-session usage (recap, hints, lookups, start of work) and totals
+src/stats.mjs                `search.mjs stats`: usage over the database and older transcripts
 skills/mem-search/SKILL.md   the skill
 test/                        node:test suite (npm test)
 ```

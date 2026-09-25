@@ -206,7 +206,11 @@ Only worth it if the skill turns out to be invoked constantly.
   manual entry that always appears in the recap. Covers the "things I keep
   re-explaining to Claude" case that transcripts cannot.
 - **`mem-forget` skill** so deletion does not require dropping to a terminal.
-- **`search.mjs stats`** — sessions per project, per week, busiest files.
+- ~~**`search.mjs stats`**~~ — done in 0.7.0, aimed at the question that
+  matters more than activity counts: is the memory used, and do sessions that
+  start with a recap reach their first edit with fewer lookups. Still open:
+  sessions per week and busiest files; and subagent sessions (§1.2) are not
+  counted.
 - **Config file** as an alternative to ten environment variables
   (`~/.claude-mem-lite/config.json`), with env vars still winning.
 - **Monorepo scoping.** One memory per repository; in a large monorepo,
