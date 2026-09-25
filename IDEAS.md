@@ -217,11 +217,16 @@ Only worth it if the skill turns out to be invoked constantly.
 
 ## 4. Testing and distribution
 
-- **CI on macOS and Linux.** Everything was developed and tested on Windows.
-  The path handling in [src/summarize.mjs](src/summarize.mjs) and
-  [src/project.mjs](src/project.mjs) is the likeliest place for a
-  platform-specific bug. A three-OS GitHub Actions matrix running `npm test` is
-  half an hour of work and closes the biggest unknown in the project.
+- **CI on macOS and Linux.** Done in 0.6.3: `.github/workflows/test.yml` runs
+  `npm test` on Ubuntu, macOS and Windows with Node 22.16 and 24. Running the
+  suite on Linux first (Docker) found two things. 17 tests failed only because
+  their fixtures were written as Windows paths (`C:\proj\src\a.ts` is not an
+  absolute path on Linux); the plugin code itself was fine, and the fixtures
+  are now built with the platform's own paths. And the documented minimum,
+  Node 22.13, was wrong: Node's bundled SQLite has no FTS5 before 22.16 (nor
+  in 23.4), so on 22.13-22.15 the plugin recorded nothing and only logged
+  "no such module: fts5". The minimum is now 22.16 (or 24), and an older Node
+  gets a clear "needs Node.js 22.16 or newer".
 - **A fixture from a long real session** committed to `test/fixtures/` (with
   paths and text scrubbed) to guard against transcript-format drift when Claude
   Code changes its `.jsonl` shape.

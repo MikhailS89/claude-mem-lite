@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { MemoryDb } from '../src/db.mjs';
 import { findTranscript, reindexSome, transcriptRoots } from '../src/reindex.mjs';
-import { commitSession, toJsonl } from './helpers.mjs';
+import { commitSession, PROJ, toJsonl } from './helpers.mjs';
 
 const tmp = mkdtempSync(join(tmpdir(), 'cml-reindex-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -21,7 +21,7 @@ function legacyRow(id, updatedAt) {
     title: 'old',
     summary: '3 prompts, 7 tool calls',
     details: { prompts: [{ ts: '', text: 'old' }], commits: [] },
-    cwd: 'C:\\proj',
+    cwd: PROJ,
     status: 'ended',
     endReason: 'prompt_input_exit',
     updatedAt,
@@ -30,7 +30,7 @@ function legacyRow(id, updatedAt) {
 
 function freshDb() {
   const db = new MemoryDb(':memory:');
-  db.upsertProject({ id: 'path:c:/proj', name: 'proj', root: 'C:\\proj' });
+  db.upsertProject({ id: 'path:c:/proj', name: 'proj', root: PROJ });
   return db;
 }
 
@@ -44,7 +44,7 @@ test('transcriptRoots honours CLAUDE_CONFIG_DIR; findTranscript searches every p
 
 test('reindexSome rebuilds old rows from transcripts, keeps their place, and stops when done', () => {
   const db = freshDb();
-  writeFileSync(join(roots[0], 'C--proj', 'old-1.jsonl'), toJsonl(commitSession({ sessionId: 'old-1', cwd: 'C:\\proj' })));
+  writeFileSync(join(roots[0], 'C--proj', 'old-1.jsonl'), toJsonl(commitSession({ sessionId: 'old-1', cwd: PROJ })));
   db.upsertSession(legacyRow('old-1', '2026-09-01T00:00:00Z'), []);
   db.upsertSession(legacyRow('gone-1', '2026-09-02T00:00:00Z'), []);
 
@@ -68,7 +68,7 @@ test('reindexSome rebuilds old rows from transcripts, keeps their place, and sto
   assert.deepEqual(reindexSome(db, { roots }), { rebuilt: 0, missing: 0, remaining: 0, done: true }, 'later runs skip the scan');
 
   // An explicit reindex retries rows whose transcript was missing.
-  writeFileSync(join(roots[0], 'C--proj', 'gone-1.jsonl'), toJsonl(commitSession({ sessionId: 'gone-1', cwd: 'C:\\proj' })));
+  writeFileSync(join(roots[0], 'C--proj', 'gone-1.jsonl'), toJsonl(commitSession({ sessionId: 'gone-1', cwd: PROJ })));
   r = reindexSome(db, { budget: Infinity, roots, force: true });
   assert.equal(r.rebuilt, 1);
   assert.equal(JSON.parse(db.getSession('gone-1').details).format, 3);
@@ -76,7 +76,7 @@ test('reindexSome rebuilds old rows from transcripts, keeps their place, and sto
 
 test('a re-indexed old session takes HEAD at end from its own last commit, not today\'s HEAD', () => {
   const db = freshDb();
-  writeFileSync(join(roots[0], 'C--proj', 'old-2.jsonl'), toJsonl(commitSession({ sessionId: 'old-2', cwd: 'C:\\proj' })));
+  writeFileSync(join(roots[0], 'C--proj', 'old-2.jsonl'), toJsonl(commitSession({ sessionId: 'old-2', cwd: PROJ })));
   db.upsertSession(legacyRow('old-2', '2026-09-03T00:00:00Z'), []);
   reindexSome(db, { budget: 5, roots, force: true });
   const git = JSON.parse(db.getSession('old-2').details).git;

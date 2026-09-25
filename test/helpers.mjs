@@ -23,6 +23,14 @@ export function writeLooseCommit(gitDir, { parent = null, subject, time, body = 
   return sha;
 }
 
+/** A project root in this platform's own path syntax. */
+export const PROJ = process.platform === 'win32' ? 'C:\\proj' : '/proj';
+
+/** `rel` (written with / or \) under `root`, in this platform's path syntax. */
+export function under(root, rel) {
+  return join(root, ...rel.split(/[\\/]/));
+}
+
 let counter = 0;
 const base = Date.parse('2026-09-21T09:00:00Z');
 
@@ -32,7 +40,7 @@ function stamp() {
 
 const common = (sessionId, cwd) => ({ sessionId, cwd, gitBranch: 'main', version: '2.1.278', userType: 'external' });
 
-export function userPrompt(text, { sessionId = 'sess-1', cwd = 'C:\\proj', isMeta = false, sidechain = false } = {}) {
+export function userPrompt(text, { sessionId = 'sess-1', cwd = PROJ, isMeta = false, sidechain = false } = {}) {
   return {
     ...common(sessionId, cwd),
     type: 'user',
@@ -52,7 +60,7 @@ export function toolUse(name, input, opts = {}) {
   return assistantBlocks([{ type: 'tool_use', id: `toolu_${counter}`, name, input }], opts);
 }
 
-export function assistantBlocks(content, { sessionId = 'sess-1', cwd = 'C:\\proj', sidechain = false } = {}) {
+export function assistantBlocks(content, { sessionId = 'sess-1', cwd = PROJ, sidechain = false } = {}) {
   return {
     ...common(sessionId, cwd),
     type: 'assistant',
@@ -77,8 +85,8 @@ export function toJsonl(records) {
 
 /** A realistic little session: prompt, read, edit, bash, answer. */
 export function sampleSession(overrides = {}) {
-  const o = { sessionId: 'sess-1', cwd: 'C:\\proj', ...overrides };
-  const f = (rel) => `${o.cwd}\\${rel}`;
+  const o = { sessionId: 'sess-1', cwd: PROJ, ...overrides };
+  const f = (rel) => under(o.cwd, rel);
   return [
     { type: 'queue-operation', operation: 'enqueue', sessionId: o.sessionId },
     userPrompt('Fix the login bug in the auth module', o),
@@ -111,8 +119,8 @@ export function bash(command, output, { isError = false, ...opts } = {}) {
 
 /** A session that commits twice, amends, fails one commit and keeps editing afterwards. */
 export function commitSession(overrides = {}) {
-  const o = { sessionId: 'sess-c', cwd: 'C:\\proj', ...overrides };
-  const f = (rel) => `${o.cwd}\\${rel}`;
+  const o = { sessionId: 'sess-c', cwd: PROJ, ...overrides };
+  const f = (rel) => under(o.cwd, rel);
   return [
     userPrompt('Implement stage 1', o),
     toolUse('Edit', { file_path: f('src\\a.ts'), old_string: 'a', new_string: 'b' }, o),

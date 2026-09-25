@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import { formatSessionBrief, isTrivialSession, parseSince, pickSessions, reworkLines } from '../src/recall.mjs';
 import { summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
-import { commitSession, toJsonl } from './helpers.mjs';
+import { commitSession, PROJ, toJsonl } from './helpers.mjs';
 
-const project = { id: 'path:c:/proj', root: 'C:\\proj', name: 'proj' };
+const project = { id: 'path:c:/proj', root: PROJ, name: 'proj' };
 const HEAD = { ref: 'main', sha: '3333333'.padEnd(40, '0') };
 
 function row(details, extra = {}) {

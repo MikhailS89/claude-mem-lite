@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { briefText, commandHead, commitsFromBash, commitWindows, displayPath, isDocPath, summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
-import { bash, commitSession, sampleSession, toJsonl, toolUse } from './helpers.mjs';
+import { bash, commitSession, PROJ, sampleSession, toJsonl, toolUse, under } from './helpers.mjs';
 
-const project = { id: 'path:c:/proj', root: 'C:\\proj', name: 'proj' };
+const project = { id: 'path:c:/proj', root: PROJ, name: 'proj' };
+const WIN = process.platform === 'win32';
 
 test('summarize produces an index-level summary and structured details', () => {
   const t = parseTranscript(toJsonl(sampleSession()));
@@ -45,10 +46,17 @@ test('summarize handles an empty transcript', () => {
 });
 
 test('displayPath relativises to the project root or home', () => {
-  assert.equal(displayPath('C:\\proj\\src\\a.ts', 'C:\\proj', 'C:\\Users\\me'), 'src/a.ts');
-  assert.equal(displayPath('C:\\Users\\me\\.claude\\x.md', 'C:\\proj', 'C:\\Users\\me'), '~/.claude/x.md');
-  assert.equal(displayPath('D:\\other\\b.ts', 'C:\\proj', 'C:\\Users\\me'), 'D:/other/b.ts');
-  assert.equal(displayPath('rel/c.ts', 'C:\\proj', 'C:\\Users\\me'), 'rel/c.ts');
+  if (WIN) {
+    assert.equal(displayPath('C:\\proj\\src\\a.ts', 'C:\\proj', 'C:\\Users\\me'), 'src/a.ts');
+    assert.equal(displayPath('C:\\Users\\me\\.claude\\x.md', 'C:\\proj', 'C:\\Users\\me'), '~/.claude/x.md');
+    assert.equal(displayPath('D:\\other\\b.ts', 'C:\\proj', 'C:\\Users\\me'), 'D:/other/b.ts');
+    assert.equal(displayPath('rel/c.ts', 'C:\\proj', 'C:\\Users\\me'), 'rel/c.ts');
+  } else {
+    assert.equal(displayPath('/proj/src/a.ts', '/proj', '/home/me'), 'src/a.ts');
+    assert.equal(displayPath('/home/me/.claude/x.md', '/proj', '/home/me'), '~/.claude/x.md');
+    assert.equal(displayPath('/other/b.ts', '/proj', '/home/me'), '/other/b.ts');
+    assert.equal(displayPath('rel/c.ts', '/proj', '/home/me'), 'rel/c.ts');
+  }
 });
 
 test('commandHead reduces a command line to its verb', () => {
@@ -163,10 +171,10 @@ test('files outside the project never count as edited after the last commit', ()
   const t = parseTranscript(
     toJsonl([
       ...commitSession(),
-      toolUse('Write', { file_path: 'C:\\Users\\me\\.claude\\projects\\p\\memory\\MEMORY.md', content: 'x' }, { sessionId: 'sess-c' }),
+      toolUse('Write', { file_path: WIN ? 'C:\\Users\\me\\.claude\\projects\\p\\memory\\MEMORY.md' : '/home/me/.claude/projects/p/memory/MEMORY.md', content: 'x' }, { sessionId: 'sess-c' }),
     ]),
   );
-  const r = summarize(t, { ...project, root: 'C:\\proj' }, {});
+  const r = summarize(t, project, {});
   assert.deepEqual(r.details.git.editedAfterLastCommit, ['README.md']);
   assert.ok(r.details.filesEdited.some((p) => p.endsWith('MEMORY.md')), 'still listed as an edited file');
   assert.doesNotMatch(r.summary, /docs: [^·]*MEMORY/);
@@ -198,8 +206,8 @@ test('summarize stores segments, rework and the details format', () => {
 test('a file edited before the last commit but left out of it moves to the uncommitted tail', () => {
   // Both files written first, then only one committed: `git status` shows the other.
   const r = summarize(parseTranscript(toJsonl([
-    toolUse('Write', { file_path: 'C:\\proj\\a.md', content: 'a' }),
-    toolUse('Write', { file_path: 'C:\\proj\\b.md', content: 'b' }),
+    toolUse('Write', { file_path: under(PROJ, 'a.md'), content: 'a' }),
+    toolUse('Write', { file_path: under(PROJ, 'b.md'), content: 'b' }),
     ...bash('git add a.md && git commit -m "docs: first file"', '[master 622b41f] docs: first file'),
   ])), project, { worktree: { clean: false, count: 1, paths: ['b.md'], hidden: 0 } });
   assert.deepEqual(

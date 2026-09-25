@@ -21,7 +21,9 @@ About 3 300 lines of plain, commented JavaScript you can audit in one sitting.
 
 ## Requirements
 
-- Node.js **22.13+** (uses the built-in `node:sqlite`; tested on Node 24)
+- Node.js **22.16+** or **24+** (uses the built-in `node:sqlite`, whose bundled
+  SQLite has full-text search only from 22.16; tested on 22.16, 24 and on
+  Windows, macOS and Linux in CI)
 - Claude Code 2.1+
 - macOS, Linux or Windows (developed and tested on Windows 10 + Node 24)
 
@@ -371,7 +373,9 @@ the list.
   earlier segments stay approximate.
 - Subagent (sidechain) activity is not recorded.
 - `node:sqlite` is marked experimental by Node; the API used here (`DatabaseSync`,
-  `prepare/run/get/all`) has been stable since Node 22.13.
+  `prepare/run/get/all`) has been stable since Node 22.13, but its bundled
+  SQLite lacks FTS5 before 22.16; on an older Node the hooks log
+  "needs Node.js 22.16 or newer" and record nothing.
 
 ## Uninstall
 

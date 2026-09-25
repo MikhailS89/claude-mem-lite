@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { describeToolUse, parseTranscript } from '../src/transcript.mjs';
-import { assistantBlocks, commitSession, sampleSession, toJsonl, userPrompt } from './helpers.mjs';
+import { assistantBlocks, commitSession, PROJ, sampleSession, toJsonl, userPrompt } from './helpers.mjs';
 
 test('parseTranscript extracts prompts, tool uses, title and metadata', () => {
   const t = parseTranscript(toJsonl(sampleSession()));
   assert.equal(t.sessionId, 'sess-1');
-  assert.equal(t.cwd, 'C:\\proj');
+  assert.equal(t.cwd, PROJ);
   assert.equal(t.branch, 'main');
   assert.equal(t.title, 'Login bug fix');
   assert.deepEqual(

@@ -1,0 +1,27 @@
+# The test suite on every supported platform and Node line. The plugin was
+# built on Windows; paths, `git status` and finding `claude` are where a
+# platform difference would show up. 22.16 is the oldest Node whose bundled
+# SQLite has FTS5, so it is tested explicitly.
+
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.16', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --version && git --version
+      # No dependencies to install: the plugin uses only Node built-ins.
+      - run: npm test

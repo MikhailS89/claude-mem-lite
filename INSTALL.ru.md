@@ -6,7 +6,7 @@
 
 ## Установка (один раз, для всех проектов)
 
-**1. Проверьте, что есть Node.js 22.13+ и Git:**
+**1. Проверьте, что есть Node.js 22.16+ (или 24+) и Git:**
 
 ```bash
 node --version
@@ -60,7 +60,7 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
   ```
   Skills-directory plugins (.claude/skills/*):
     ❯ claude-mem-lite@skills-dir
-      Version: 0.6.2
+      Version: 0.6.3
       Scope: user
       Path: ~/.claude/skills/claude-mem-lite
       Status: ✔ loaded
@@ -344,4 +344,6 @@ alias mem='node ~/.claude/skills/claude-mem-lite/scripts/search.mjs'
   cd "$env:USERPROFILE\.claude\skills\claude-mem-lite"; npm test   # Windows
   ```
 
-- **Ошибка про `node:sqlite`** — значит Node.js старее 22.13. Обновите Node.
+- **Ошибка про `node:sqlite`** или в `hooks.log` строка «needs Node.js 22.16 or
+  newer» — значит Node.js старее 22.16: встроенный в него SQLite
+  не умеет полнотекстовый поиск, и плагин ничего не записывает. Обновите Node.

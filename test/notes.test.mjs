@@ -10,13 +10,13 @@ import { pendingCommits, summarizePending } from '../src/notes.mjs';
 import { formatSessionBrief, statedWhy } from '../src/recall.mjs';
 import { summarize } from '../src/summarize.mjs';
 import { parseTranscript } from '../src/transcript.mjs';
-import { commitSession, toJsonl } from './helpers.mjs';
+import { commitSession, PROJ, toJsonl } from './helpers.mjs';
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude.mjs');
 const tmp = mkdtempSync(join(tmpdir(), 'cml-notes-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
-const project = { id: 'path:c:/proj', root: 'C:\\proj', name: 'proj' };
+const project = { id: 'path:c:/proj', root: PROJ, name: 'proj' };
 
 function sessionDb() {
   const db = new MemoryDb(':memory:');

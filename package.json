@@ -1,11 +1,11 @@
 {
   "name": "claude-mem-lite",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Local, offline, auditable session memory for Claude Code. Zero dependencies.",
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "test": "node --no-warnings --test \"test/*.test.mjs\"",

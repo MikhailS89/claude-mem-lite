@@ -143,7 +143,16 @@ export class MemoryDb {
     this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA foreign_keys = ON');
-    this.db.exec(SCHEMA);
+    try {
+      this.db.exec(SCHEMA);
+    } catch (err) {
+      // Node's bundled SQLite gained FTS5 in 22.16; before that every write
+      // would fail with an opaque "no such module". Say what is actually wrong.
+      if (/no such module: fts5/i.test(String(err?.message))) {
+        throw new Error(`needs Node.js 22.16 or newer (its SQLite lacks full-text search before that); this is Node ${process.version}`);
+      }
+      throw err;
+    }
     this.db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
       'schema_version',
       String(SCHEMA_VERSION),
