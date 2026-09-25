@@ -8,7 +8,7 @@
     "node": ">=22.16.0"
   },
   "scripts": {
-    "test": "node --no-warnings --test \"test/*.test.mjs\"",
+    "test": "node --no-warnings --import ./test/setup.mjs --test \"test/*.test.mjs\"",
     "search": "node --no-warnings scripts/search.mjs"
   },
   "license": "MIT"
