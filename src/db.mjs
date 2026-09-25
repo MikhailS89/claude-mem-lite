@@ -21,8 +21,15 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { dbPath as defaultDbPath } from './config.mjs';
+import { foldText, stem } from './stem.mjs';
 
 const SCHEMA_VERSION = 2;
+
+/**
+ * How indexed text is prepared (see foldText in stem.mjs). A database whose
+ * indexes were built another way is re-indexed once when opened.
+ */
+const SEARCH_INDEX_VERSION = '2';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -124,10 +131,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
 export class MemoryDb {
   /**
    * @param {string} [path] defaults to config.dbPath; ':memory:' for tests
-   * @param {{busyTimeoutMs?: number}} [opts] how long to wait for a writer;
-   *        a hook that blocks Claude (file hints) waits briefly and gives up
+   * @param {{busyTimeoutMs?: number, maintenance?: boolean}} [opts]
+   *        busyTimeoutMs: how long to wait for a writer; a hook that blocks
+   *        Claude (file hints) waits briefly and gives up.
+   *        maintenance: allow one-off upkeep such as rebuilding the search
+   *        index; off for hooks Claude waits on, which must stay fast
    */
-  constructor(path = defaultDbPath, { busyTimeoutMs = 3000 } = {}) {
+  constructor(path = defaultDbPath, { busyTimeoutMs = 3000, maintenance = true } = {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
@@ -138,6 +148,34 @@ export class MemoryDb {
       'schema_version',
       String(SCHEMA_VERSION),
     );
+    if (maintenance && this.getMeta('search_index_version') !== SEARCH_INDEX_VERSION) {
+      this.rebuildSearchIndex();
+      this.setMeta('search_index_version', SEARCH_INDEX_VERSION);
+    }
+  }
+
+  /**
+   * Rebuild both full-text indexes from the stored rows (no transcripts
+   * needed). Run once when the way text is indexed changes.
+   */
+  rebuildSearchIndex() {
+    const sessions = this.db.prepare('SELECT id, project_id, title, summary, details FROM sessions').all();
+    const files = this.db.prepare('SELECT path FROM session_files WHERE session_id = ?');
+    const ins = this.db.prepare('INSERT INTO sessions_fts(session_id, title, summary, body) VALUES (?, ?, ?, ?)');
+    this.db.exec('BEGIN');
+    try {
+      this.db.exec('DELETE FROM sessions_fts');
+      this.db.exec('DELETE FROM segments_fts');
+      for (const s of sessions) {
+        const details = parsedDetails(s.details);
+        ins.run(s.id, foldText(s.title ?? ''), foldText(s.summary ?? ''), foldText(fulltextBody(details, files.all(s.id))));
+        this.#writeSegments(s.id, s.project_id, details.segments ?? []);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   getMeta(key) {
@@ -217,9 +255,9 @@ export class MemoryDb {
       tx.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(row.id);
       tx.prepare('INSERT INTO sessions_fts(session_id, title, summary, body) VALUES (?, ?, ?, ?)').run(
         row.id,
-        row.title ?? '',
-        row.summary,
-        body,
+        foldText(row.title ?? ''),
+        foldText(row.summary),
+        foldText(body),
       );
       this.#writeSegments(row.id, row.projectId, parsedDetails(row.details).segments ?? []);
       tx.exec('COMMIT');
@@ -257,7 +295,12 @@ export class MemoryDb {
       for (const f of s.files ?? []) insFile.run(sessionId, s.seq, f.path, f.kind, f.ops ?? 1);
       const n = s.commit ? note.get(s.commit.sha) : null;
       const noteText = n ? [n.what, n.why] : [];
-      insFts.run(sessionId, s.seq, s.commit?.subject ?? '', [...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path), ...noteText].join('\n'));
+      insFts.run(
+        sessionId,
+        s.seq,
+        foldText(s.commit?.subject ?? ''),
+        foldText([...(s.prompts ?? []), ...(s.files ?? []).map((f) => f.path), ...noteText].join('\n')),
+      );
     }
   }
 
@@ -594,5 +637,5 @@ export function ftsTerms(query) {
     .map((t) => t.replace(/"/g, '').trim())
     .filter((t) => t.length >= 2)
     .slice(0, 12)
-    .map((t) => `"${t}"*`);
+    .map((t) => `"${stem(t)}"*`);
 }

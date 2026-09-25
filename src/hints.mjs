@@ -39,7 +39,7 @@ export function fileHint(input, { db = null } = {}) {
   if (db === null && !existsSync(dbPath)) return null;
 
   const own = db === null;
-  const store = db ?? new MemoryDb(undefined, { busyTimeoutMs: 200 });
+  const store = db ?? new MemoryDb(undefined, { busyTimeoutMs: 200, maintenance: false });
   try {
     const hints = [];
     for (const path of paths) {

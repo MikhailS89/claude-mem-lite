@@ -60,7 +60,7 @@ git clone git@github.com:MikhailS89/claude-mem-lite.git "$env:USERPROFILE\.claud
   ```
   Skills-directory plugins (.claude/skills/*):
     ❯ claude-mem-lite@skills-dir
-      Version: 0.6.0
+      Version: 0.6.1
       Scope: user
       Path: ~/.claude/skills/claude-mem-lite
       Status: ✔ loaded

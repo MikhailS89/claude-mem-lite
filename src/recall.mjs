@@ -237,7 +237,8 @@ export function buildRecall(input, { db = null } = {}) {
   if (db === null && !existsSync(dbPath)) return null; // first run: nothing stored yet
 
   const own = db === null;
-  const store = db ?? new MemoryDb();
+  // Claude waits for this hook: no one-off upkeep here (Stop and the CLI do it).
+  const store = db ?? new MemoryDb(undefined, { maintenance: false });
   try {
     const total = store.countSessions(project.id);
     if (!total) return null;

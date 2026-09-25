@@ -25,19 +25,22 @@ form never matches a **shorter** stored word. Verified:
 | `parsers` | "parser" | **not found** |
 
 This hits Russian hardest, where the same noun appears in several cases in the
-same session. Options, cheapest first:
+same session.
 
-- Also index a **trigram** copy of the text (`tokenize = 'trigram'` in a second
-  FTS5 table) and fall back to it when the prefix query returns nothing. No
-  dependencies, handles any language, costs disk.
-- Strip common Russian/English endings before indexing and querying (a crude
-  stemmer, ~30 lines). Cheap but produces false positives.
-- Let the query try progressively shorter prefixes of each term (`кэша` →
-  `кэш` → `кэ`) and stop at the first hit. No schema change, but ranking gets
-  fuzzy.
+**Done in 0.6.1** with a light stemmer applied to *query* terms only
+([src/stem.mjs](src/stem.mjs)): `кэша` → `"кэш"*`, `parsers` → `"parser"*`.
+Since every term is already a prefix match, the stem finds every form. No
+schema change and no re-indexing of stored text. On a copy of the real
+database: `кэша` 0 → 2 segments, `переводы` 1 → 4, `коммитов` 2 → 5.
 
-Trigram fallback is probably the right call — see `ftsTerms()` and `search()`
-in [src/db.mjs](src/db.mjs).
+The trigram fallback proposed here first would not have worked: a trigram
+index finds the query as a *substring* of the text, and the failing case is
+the opposite - `кэша` is not a substring of `кэш`.
+
+Found on the way: SQLite's unicode61 tokenizer treats `ё` and `е` as different
+letters, so `еще` did not find `ещё`. Indexed text and queries are now both
+folded to `е`; databases indexed before are re-indexed once from their stored
+rows (by `Stop` or the CLI, never by the hooks Claude waits on).
 
 ### 1.2 Subagent work is invisible
 

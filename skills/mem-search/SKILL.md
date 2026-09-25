@@ -27,7 +27,7 @@ node --no-warnings "${CLAUDE_PLUGIN_ROOT}/scripts/search.mjs" <subcommand> [flag
 Subcommands, most useful first:
 
 - `touched <path-fragment>` — when a file was last changed, in which commit, and whether that work was later undone or revisited. The main question memory answers that git does not answer as directly.
-- `<words...>` — full-text search over commit subjects, prompts and file paths.
+- `<words...>` — full-text search over commit subjects, prompts, file paths and commit notes. Word forms do not matter (`кэша` finds `кэш`), nor does `е` vs `ё`.
 - `recent [--limit N]` — newest segments first (`--sessions` for whole sessions).
 - `show <session-id | commit sha>` — one session with all its segments, or the segment a commit belongs to (an 8-char id or 7-char sha prefix is enough).
 - `projects` — all projects that have memory.

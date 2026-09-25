@@ -1,7 +1,7 @@
 {
   "name": "claude-mem-lite",
   "displayName": "Claude Mem Lite",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Local, offline session memory for Claude Code: remembers what you worked on in each project and injects a short recap into new sessions. No network, no accounts, no daemons.",
   "author": {
     "name": "MikhailS89"

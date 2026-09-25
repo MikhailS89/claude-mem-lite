@@ -177,7 +177,9 @@ cannot tell those from reading a file. Turn it off with
 
 **`/claude-mem-lite:mem-search <words>`** — the skill Claude uses to look
 further back: `touched <file>` (when was it last changed, in which commit, and
-did that work hold), full-text search over commit subjects, prompts and paths,
+did that work hold), full-text search over commit subjects, prompts and paths
+(any word form finds the others - `кэша` finds `кэш`, `parsers` finds
+`parser` - and `е` / `ё` are the same letter),
 and `show` for one session or one commit. This is the "progressive
 disclosure" idea from the original: a cheap index first, details on request.
 

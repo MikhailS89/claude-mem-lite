@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MemoryDb, ftsTerms } from '../src/db.mjs';
+import { stem } from '../src/stem.mjs';
 
 const projectA = { id: 'git:github.com/me/a', name: 'a', root: 'C:\\a' };
 const projectB = { id: 'path:c:/b', name: 'b', root: 'C:\\b' };
@@ -225,4 +229,67 @@ test('sessionsOlderThan finds rows written before a details format; updatedAt ca
   db.setMeta('k', 'v');
   assert.equal(db.getMeta('k'), 'v');
   assert.equal(db.getMeta('missing'), null);
+});
+
+// --- inflected forms ------------------------------------------------------------
+
+test('search finds a word in any inflected form (IDEAS 1.1)', () => {
+  const db = seeded(); // s2's prompt: "давай зафиксируем кэш в CONTEXT.md"
+  for (const q of ['кэш', 'кэша', 'кэшу', 'кэшем', 'Кэша']) assert.deepEqual(db.search(q, { projectId: projectA.id }).map((s) => s.id), ['s2'], q);
+  db.upsertSession(session('s6', projectA.id, { title: 'Parser rewrite', prompt: 'the parser drops tests' }), []);
+  for (const q of ['parser', 'parsers', 'test', 'tests']) assert.ok(db.search(q, { projectId: projectA.id }).some((s) => s.id === 's6'), q);
+});
+
+test('ё and е find each other, in stored text and in queries', () => {
+  const db = seeded();
+  db.upsertSession(session('s7', projectA.id, { title: 'Зелёная тема', prompt: 'ещё раз проверить' }), []);
+  db.upsertSession(session('s8', projectA.id, { title: 'Зеленая кнопка', prompt: 'еще одна' }), []);
+  assert.deepEqual(db.search('зеленая', { projectId: projectA.id }).map((s) => s.id).sort(), ['s7', 's8']);
+  assert.deepEqual(db.search('зелёный', { projectId: projectA.id }).map((s) => s.id).sort(), ['s7', 's8']);
+  assert.deepEqual(db.search('ещё', { projectId: projectA.id }).map((s) => s.id).sort(), ['s7', 's8']);
+});
+
+test('a database indexed the old way is re-indexed once when opened', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cml-reidx-'));
+  try {
+    const path = join(dir, 'memory.db');
+    let db = new MemoryDb(path);
+    db.upsertProject(projectA);
+    db.upsertSession(session('s9', projectA.id, { title: 'Зелёная тема' }), []);
+    // Simulate an index written before folding: raw ё in the index, old version mark.
+    db.db.exec("DELETE FROM sessions_fts; INSERT INTO sessions_fts(session_id, title, summary, body) VALUES ('s9', 'Зелёная тема', '', '')");
+    db.setMeta('search_index_version', '1');
+    assert.equal(db.search('зеленая').length, 0, 'the old index misses it');
+    db.close();
+    db = new MemoryDb(path);
+    assert.deepEqual(db.search('зеленая').map((s) => s.id), ['s9']);
+    assert.equal(db.getMeta('search_index_version'), '2');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('stem cuts endings of plain words only, never below three letters', () => {
+  const cases = { кэша: 'кэш', архитектуры: 'архитектур', этапа: 'этап', база: 'баз', кот: 'кот', parsers: 'parser', tests: 'test', fixed: 'fix', class: 'class', 'auth.ts': 'auth.ts', 'stage-1': 'stage-1', ae2da15: 'ae2da15', Зелёный: 'зелен' };
+  for (const [w, s] of Object.entries(cases)) assert.equal(stem(w), s, w);
+  assert.deepEqual(ftsTerms('кэша parsers auth.ts'), ['"кэш"*', '"parser"*', '"auth.ts"*']);
+});
+
+test('opening without maintenance leaves an outdated index for a later, unhurried open', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cml-maint-'));
+  try {
+    const path = join(dir, 'memory.db');
+    let db = new MemoryDb(path);
+    db.setMeta('search_index_version', '1');
+    db.close();
+    db = new MemoryDb(path, { maintenance: false });
+    assert.equal(db.getMeta('search_index_version'), '1', 'a blocking hook does not rebuild');
+    db.close();
+    db = new MemoryDb(path);
+    assert.equal(db.getMeta('search_index_version'), '2');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
